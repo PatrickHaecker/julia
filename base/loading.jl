@@ -1920,9 +1920,8 @@ function compilecache_freshest_path(pkg::PkgId;
             try
                 # update timestamp of precompilation file so that it is the first to be tried by code loading
                 touch(path_to_try)
-            catch ex
+            catch
                 # file might be read-only and then we fail to update timestamp, which is fine
-                ex isa IOError || rethrow()
             end
             return path_to_try
             @label check_next_path
@@ -2144,8 +2143,8 @@ end
                 if stalecheck
                     try
                         touch(path_to_try) # update timestamp of precompilation file
-                    catch ex # file might be read-only and then we fail to update timestamp, which is fine
-                        ex isa IOError || rethrow()
+                    catch
+                        # file might be read-only and then we fail to update timestamp, which is fine
                     end
                 end
                 # finish loading module graph into staledeps
