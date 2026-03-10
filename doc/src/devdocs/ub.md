@@ -12,8 +12,8 @@ of this optimization is another way of thinking about which behaviors are observ
 Additionally, the allowable behaviors for a given program are not unique. For example, the `@fastmath` macro gives wide semantic latitude for floating point math rearrangements and two subsequent invocations of the same operation inside of that macro, even on the same values, are not semantically required to produce the same answer. The situation is similar for asynchronous operations, random number generation, etc.
 
 !!! note
-    It is important to note that while multiple behaviors may be allowable, this does not mean the the optimizer
-    is allowed to assume that all invocations of a particular function will have exhibit a particular allowable
+    It is important to note that while multiple behaviors may be allowable, this does not mean that the optimizer
+    is allowed to assume that all invocations of a particular function will exhibit a particular allowable
     behavior. To the contrary, unless the optimizer can prove that a particular behavior will happen at runtime
     (e.g. by private interface agreement with the code generator), it must generally assume that any allowable
     behavior may occur. In julia, we often refer to this concept as "IPO" safety.
