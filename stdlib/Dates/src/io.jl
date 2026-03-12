@@ -755,4 +755,4 @@ Base.TOML.Printer.printvalue(f::Function, io::IO, value::Time, sorted::Bool) =
     Base.print(io, Dates.format(value, dateformat"HH:MM:SS.sss"))
 Base.TOML.Printer.printvalue(f::Function, io::IO, value::DateTime, sorted::Bool) =
     Base.print(io, Dates.format(value, dateformat"YYYY-mm-dd\THH:MM:SS.sss\Z"))
-Base.TOML.Printer.is_valid_toml_value(@nospecialize(::Union{Date,Time,DateTime})) = true
+Base.TOML.Printer.is_valid_toml_value(@nospecialize(x::Union{Date,Time,DateTime})) = true
