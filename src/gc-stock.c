@@ -202,6 +202,7 @@ int prev_sweep_full = 1;
 int current_sweep_full = 0;
 int next_sweep_full = 0;
 int under_pressure = 0;
+int gc_disable_auto_full_sweep = 0; // when set, automatic full collections are inhibited
 
 // Full collection heuristics
 static int64_t live_bytes = 0;
@@ -630,7 +631,7 @@ void jl_gc_reset_alloc_count(void) JL_NOTSAFEPOINT
 static void jl_gc_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
 {
     assert(jl_is_genericmemory(m));
-    assert(jl_genericmemory_how(m) == 1);
+    assert(jl_genericmemory_how(m) == JL_GENERICMEMORY_GCMANAGED);
     char *d = (char*)m->ptr;
     size_t freed_bytes = memory_block_usable_size(d, isaligned);
     assert(freed_bytes != 0);
@@ -2383,13 +2384,13 @@ FORCE_INLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_gc_markqueue_t *mq, void *_
                     gc_setmark_big(ptls, o, bits);
             }
             int how = jl_genericmemory_how(m);
-            if (how == 0 || how == 2) {
-                gc_heap_snapshot_record_hidden_edge(new_obj, m->ptr, jl_genericmemory_nbytes(m), how == 0 ? 2 : 0);
+            if (how == JL_GENERICMEMORY_MALLOCD) {
+                gc_heap_snapshot_record_foreign_memory_edge(
+                    new_obj, m->ptr, jl_genericmemory_nbytes(m));
             }
-            else if (how == 1) {
+            else if (how == JL_GENERICMEMORY_GCMANAGED) {
                 if (update_meta || foreign_alloc) {
                     size_t nb = jl_genericmemory_nbytes(m);
-                    gc_heap_snapshot_record_hidden_edge(new_obj, m->ptr, nb, 0);
                     if (bits == GC_OLD_MARKED) {
                         ptls->gc_tls.gc_cache.perm_scanned_bytes += nb;
                     }
@@ -2398,7 +2399,7 @@ FORCE_INLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_gc_markqueue_t *mq, void *_
                     }
                 }
             }
-            else if (how == 3) {
+            else if (how == JL_GENERICMEMORY_STRINGOWNED) {
                 jl_value_t *owner = jl_genericmemory_data_owner_field(m);
                 uintptr_t nptr = (1 << 2) | (bits & GC_OLD);
                 gc_try_claim_and_push(mq, owner, &nptr);
@@ -3167,6 +3168,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         recollect = 1;
         gc_count_full_sweep_reason(FULL_SWEEP_REASON_FORCED_FULL_SWEEP);
     }
+    if (gc_disable_auto_full_sweep && collection != JL_GC_FULL) {
+        sweep_full = 0;
+    }
     // 5. start sweeping
     uint64_t start_sweep_time = jl_hrtime();
     JL_PROBE_GC_SWEEP_BEGIN(sweep_full);
@@ -3233,7 +3237,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         old_freed_diff = gc_mem;
         old_pause_time = gc_time;
         // thrashing estimator: if GC time more than 50% of the runtime
-        if (pause > mutator_time && !(thrash_counter < 4))
+        if (pause > mutator_time && thrash_counter <= 4)
             thrash_counter += 1;
         else if (thrash_counter > 0)
             thrash_counter -= 1;
@@ -4121,6 +4125,18 @@ void jl_gc_notify_image_load(const char* img_data, size_t len)
 
 JL_DLLEXPORT const char* jl_gc_active_impl(void) {
     return "Built with stock GC";
+}
+
+JL_DLLEXPORT int jl_gc_enable_auto_full_collection(int on)
+{
+    int prev = !gc_disable_auto_full_sweep;
+    gc_disable_auto_full_sweep = (on == 0);
+    return prev;
+}
+
+JL_DLLEXPORT int jl_gc_auto_full_collection_is_enabled(void)
+{
+    return !gc_disable_auto_full_sweep;
 }
 
 #ifdef __cplusplus

@@ -266,7 +266,7 @@ include("threadcall.jl")
 # code loading
 include("uuid.jl")
 include("pkgid.jl")
-include("toml_parser.jl")
+include("toml/toml.jl")
 include("linking.jl")
 include("loading.jl")
 
