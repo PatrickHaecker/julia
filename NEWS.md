@@ -38,6 +38,10 @@ Compiler/Runtime improvements
 Command-line option changes
 ---------------------------
 
+  - The `--warn-overwrite` option now defaults to `yes`, so method overwrite warnings are
+    shown by default. This helps catch accidental method overwrites early in interactive use,
+    since method overwrites during precompilation are always an error ([#61388]).
+
 Multi-threading changes
 -----------------------
 

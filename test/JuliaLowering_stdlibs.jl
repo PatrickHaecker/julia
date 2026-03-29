@@ -15,7 +15,7 @@ function compile_JL_sysimage(output_filepath)
 
     package_root = joinpath(Sys.STDLIB, "..", "..", "JuliaLowering")
     cmd = `$(JULIA_EXECUTABLE) -C "$(JULIA_CPU_TARGET)" --output-o $(output_object)
-           --startup-file=no --warn-overwrite=yes --depwarn=error --sysimage $(sysimage)
+           --startup-file=no --depwarn=error --sysimage $(sysimage)
            -e "Core.include(Base, $(repr(joinpath(package_root, "src", "JuliaLowering.jl"))))"`
     cmd = addenv(
         Base.Cmd(cmd; dir = joinpath(package_root, "src")),

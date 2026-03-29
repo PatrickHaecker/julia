@@ -1236,7 +1236,7 @@ end
 # PR #23002
 let exename = `$(Base.julia_cmd()) --startup-file=no`
     for (mac, flag, pfix, msg) in [("@test_nowarn", ``, "_1", ""),
-                                   ("@test_warn",   `--warn-overwrite=yes`, "_2", "\"WARNING: Method definition\"")]
+                                   ("@test_warn", "_2", "\"WARNING: Method definition\"")]
         str = """
         using Test
         try

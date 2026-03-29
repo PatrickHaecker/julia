@@ -91,7 +91,7 @@ let
         A.f() = 1
         outer() = (g() = 1; g() = 2; g)
         """
-    warning_str = read(`$exename --warn-overwrite=yes --startup-file=no -e $script`, String)
+    warning_str = read(`$exename --startup-file=no -e $script`, String)
     @test warning_str == """
         WARNING: Method definition f() in module A at none:2 overwritten in module Main on the same line (check for duplicate calls to `include`).
         WARNING: Method definition f() in module Main at none:2 overwritten at none:3.

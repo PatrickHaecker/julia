@@ -3373,7 +3373,7 @@ function create_expr_cache(pkg::PkgId, input::PkgLoadSpec, output::String, outpu
                                $(flags)
                                $(opts)
                                --output-incremental=yes
-                               --startup-file=no --history-file=no --warn-overwrite=yes
+                               --startup-file=no --history-file=no
                                $(have_color === nothing ? "--color=auto" : have_color ? "--color=yes" : "--color=no")
                                -`,
                               "OPENBLAS_NUM_THREADS" => 1,
