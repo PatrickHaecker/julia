@@ -4,6 +4,7 @@ Pkg.activate(".")
 
 using Test
 using JSON
+using Serialization
 
 @test length(ARGS) == 1
 bindir = dirname(ARGS[1])
@@ -87,4 +88,16 @@ let exe_suffix = splitext(Base.julia_exename())[2]
     # `Ptr{CTree{Float64}}` should refer (recursively) back to the original type id
     Ptr_CTree_Float64 = abi["types"][CVector_CTree_Float64["fields"][2]["type_id"]]
     @test Ptr_CTree_Float64["pointee_type_id"] == CTree_Float64_id
+
+    # Test that Serialization.serialize supports trimming
+    serialization_exe = joinpath(bindir, "serialization" * exe_suffix)
+    @test readchomp(`$serialization_exe`) == "serialization ok"
+    # Verify stdlib types were serialized correctly
+    result = deserialize(joinpath(bindir, "_trim_stdlib.jls"))
+    @test result == (42, "hello", :sym, (1, 2.0), Int[10, 20, 30])
+    # Verify custom struct file was produced
+    @test filesize(joinpath(bindir, "_trim_custom.jls")) > 0
+    # Clean up
+    rm(joinpath(bindir, "_trim_stdlib.jls"), force=true)
+    rm(joinpath(bindir, "_trim_custom.jls"), force=true)
 end
