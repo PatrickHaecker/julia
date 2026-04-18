@@ -307,16 +307,6 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                     ci = get(caches, edge_mi, nothing)
                     ci isa CodeInstance && continue # assume that only this_world matters for trim
                 end
-            elseif edge isa MethodInstance
-                ci = get(caches, edge, nothing)
-                ci isa CodeInstance && continue
-                # Fallback: resolve via method lookup (handles identity mismatch)
-                atype = edge.specTypes
-                resolved_mi = compileable_specialization_for_call(interp, atype)
-                if !isnothing(resolved_mi)
-                    ci = get(caches, resolved_mi, nothing)
-                    ci isa CodeInstance && continue
-                end
             end
             # TODO: check for calls to Base.atexit?
         elseif isexpr(stmt, :call)

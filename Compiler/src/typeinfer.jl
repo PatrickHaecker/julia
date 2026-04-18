@@ -1622,11 +1622,7 @@ function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vec
         isexpr(stmt, :(=)) && (stmt = stmt.args[2])
         if isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify)
             edge = stmt.args[1]
-            if edge isa CodeInstance
-                isdefined(edge, :inferred) && push!(workqueue, edge)
-            elseif edge isa MethodInstance
-                push!(workqueue, edge)
-            end
+            edge isa CodeInstance && isdefined(edge, :inferred) && push!(workqueue, edge)
         end
 
         invokelatest_queue === nothing && continue
@@ -1686,7 +1682,6 @@ function add_codeinsts_to_jit!(interp::AbstractInterpreter, ci, source_mode::UIn
     while !isempty(workqueue)
         # ci_has_real_invoke(ci) && return ci # optimization: cease looping if ci happens to get compiled (not just jl_fptr_wait_for_compiled, but fully jl_is_compiled_codeinst)
         callee = pop!(workqueue)
-        callee isa MethodInstance && continue # MethodInstance edges from @generated; only relevant for trim compilation
         ci_has_invoke(callee) && continue
         isinspected(workqueue, callee) && continue
         src = ci_get_source(interp, callee)
