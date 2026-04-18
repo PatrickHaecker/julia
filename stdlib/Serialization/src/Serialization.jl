@@ -748,10 +748,9 @@ end
     nf = fieldcount(T)
     exprs = Vector{Expr}(undef, nf)
     for i in 1:nf
-        fname = QuoteNode(fieldname(T, i))
         exprs[i] = quote
-            if isdefined(x, $fname)
-                serialize(s, getfield(x, $fname))
+            if isdefined(x, $i)
+                serialize(s, getfield(x, $i))
             else
                 writetag(s.io, UNDEFREF_TAG)
             end
