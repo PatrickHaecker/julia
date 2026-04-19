@@ -718,3 +718,44 @@ end
     @test new_d[:m] isa Memory
     @test new_d[:m][5] == 125
 end
+
+# Verify that `if @generated` functions have consistent effects between generated
+# and fallback branches, so the compiler cannot unsoundly remove code.
+@testset "if @generated effects consistency" begin
+    using Serialization: serialize_any, serialize_fields, serialize_type_data, serialize_datatype
+
+    S = Serializer{IOBuffer}
+    # Check all effect fields except nonoverlayed, which may legitimately differ:
+    # concrete types can prove no overlays, abstract types conservatively cannot.
+    # nonoverlayed only gates concrete evaluation and never causes code removal.
+    effect_fields = filter(!=(:nonoverlayed), fieldnames(Base.Compiler.Effects))
+
+    function check_effects(concrete_args, abstract_args)
+        e_gen = Base.infer_effects(concrete_args...)
+        e_fb  = Base.infer_effects(abstract_args...)
+        for field in effect_fields
+            @test getfield(e_gen, field) == getfield(e_fb, field)
+        end
+    end
+
+    @testset "serialize(Tuple)" begin
+        check_effects((serialize, (S, Tuple{Int,String})),
+                      (serialize, (AbstractSerializer, Tuple)))
+    end
+    @testset "serialize_type_data" begin
+        check_effects((serialize_type_data, (S, Type{Vector{Int}})),
+                      (serialize_type_data, (AbstractSerializer, Type)))
+    end
+    @testset "serialize_datatype" begin
+        check_effects((serialize_datatype, (S, Type{Vector{Int}})),
+                      (serialize_datatype, (AbstractSerializer, Type)))
+    end
+    @testset "serialize_any" begin
+        check_effects((serialize_any, (S, SubString{String})),
+                      (serialize_any, (AbstractSerializer, Any)))
+    end
+    @testset "serialize_fields" begin
+        check_effects((serialize_fields, (S, SubString{String})),
+                      (serialize_fields, (AbstractSerializer, Any)))
+    end
+end
