@@ -611,6 +611,31 @@ function serialize_type_data_dynamic(s, @nospecialize(t::DataType))
     nothing
 end
 
+# Serialize a type-valued DataType parameter statically, recursing through
+# `Union` so that trimming does not need to see the reflective
+# `serialize_fields(::Union)` fallback. Any non-`Union` case falls back to the
+# ordinary `serialize` dispatch (which for `DataType`/`UnionAll`/`Bottom` is
+# already statically resolvable from the compile-time type argument).
+function serialize_type_param(s::AbstractSerializer, ::Type{T}) where T
+    if @generated
+        if T isa Union
+            a = T.a
+            b = T.b
+            return quote
+                writetag(s.io, $(sertag(Union)))
+                serialize_type_param(s, $a)
+                serialize_type_param(s, $b)
+            end
+        elseif T isa DataType
+            return :(serialize_datatype(s, $T))
+        else
+            return :(serialize(s, T))
+        end
+    else
+        serialize(s, T)
+    end
+end
+
 function serialize_type_data(s, t::Type{T}) where T
     if @generated
         # When called with a DataType containing free TypeVars (e.g. Foo{T} from
@@ -634,6 +659,11 @@ function serialize_type_data(s, t::Type{T}) where T
                 for p in params
                     if p isa DataType
                         push!(exprs, :(serialize_datatype(s, $p)))
+                    elseif p isa Type
+                        # Union (and similar) type parameters: recurse
+                        # statically so trim does not see the reflective
+                        # `serialize_fields`/`getfield(::Type, N)::Any` path.
+                        push!(exprs, :(serialize_type_param(s, $p)))
                     else
                         push!(exprs, :(serialize(s, $(QuoteNode(p)))))
                     end
