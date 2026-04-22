@@ -412,7 +412,10 @@ function serialize(s::AbstractSerializer, m::Module)
     writetag(s.io, EMPTYTUPLE_TAG)
 end
 
-object_number(::AbstractSerializer, @nospecialize(l)) = objectid(l)
+# In principle, use the `AbstractSerializer`'s counter to assign unique object numbers.
+# However, as the counter as already be incremented, actually use the copy in `table.l`
+# as the result is more intuitive.
+object_number(s::AbstractSerializer, l) = s.table[l] % UInt64
 
 lookup_object_number(s::AbstractSerializer, n::UInt64) = nothing
 
