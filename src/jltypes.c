@@ -61,8 +61,6 @@ static int layout_uses_free_typevars(jl_value_t *v, jl_typeenv_t *env)
     while (1) {
         if (jl_is_typevar(v))
             return !typeenv_has(env, (jl_tvar_t*)v);
-        if (jl_is_typeapp(v))
-            return 1;
         while (jl_is_unionall(v)) {
             jl_unionall_t *ua = (jl_unionall_t*)v;
             jl_typeenv_t *newenv = (jl_typeenv_t*)alloca(sizeof(jl_typeenv_t));
@@ -121,8 +119,6 @@ static int has_free_typevars(jl_value_t *v, jl_typeenv_t *env) JL_NOTSAFEPOINT
         if (jl_is_typevar(v)) {
             return !typeenv_has(env, (jl_tvar_t*)v);
         }
-        if (jl_is_typeapp(v))
-            return 1;
         while (jl_is_unionall(v)) {
             jl_unionall_t *ua = (jl_unionall_t*)v;
             if (ua->var->lb != jl_bottom_type && has_free_typevars(ua->var->lb, env))
@@ -190,10 +186,6 @@ static void find_free_typevars(jl_value_t *v, jl_typeenv_t *env, jl_array_t *out
             }
             return;
         }
-        if (jl_is_typeapp(v)) {
-            jl_array_ptr_1d_push(out, v);
-            return;
-        }
         while (jl_is_unionall(v)) {
             jl_unionall_t *ua = (jl_unionall_t*)v;
             if (ua->var->lb != jl_bottom_type)
@@ -248,13 +240,6 @@ int jl_has_bound_typevars(jl_value_t *v, jl_typeenv_t *env) JL_NOTSAFEPOINT
     while (1) {
         if (jl_is_typevar(v)) {
             return typeenv_has_ne(env, (jl_tvar_t*)v);
-        }
-        if (jl_is_typeapp(v)) {
-            jl_typeapp_t *ta = (jl_typeapp_t*)v;
-            if (jl_has_bound_typevars(ta->head, env))
-                return 1;
-            v = ta->param;
-            continue;
         }
         while (jl_is_unionall(v)) {
             jl_unionall_t *ua = (jl_unionall_t*)v;
@@ -982,7 +967,7 @@ JL_DLLEXPORT jl_value_t *jl_type_unionall(jl_tvar_t *v, jl_value_t *body)
             return (jl_value_t*)jl_wrap_vararg(vm->T, NULL, 1, 0);
         }
     }
-    if (!jl_is_type(body) && !jl_is_typevar(body) && !jl_is_typeapp(body))
+    if (!jl_is_type(body) && !jl_is_typevar(body))
         jl_type_error("UnionAll", (jl_value_t*)jl_type_type, body);
     // normalize `T where T<:S` => S
     if (body == (jl_value_t*)v)
@@ -2649,8 +2634,6 @@ static jl_value_t *inst_tuple_w_(jl_value_t *t, jl_typeenv_t *env, jl_typestack_
 static jl_value_t *inst_type_w_(jl_value_t *t, jl_typeenv_t *env, jl_typestack_t *stack, int check, int nothrow)
 {
     size_t i;
-    if (jl_is_typeapp(t))
-        return t;
     if (jl_is_typevar(t)) {
         jl_typeenv_t *e = env;
         while (e != NULL) {
@@ -4055,9 +4038,6 @@ void post_boot_hooks(void)
     jl_value_t *kwcall_func  = core("kwcall");
     jl_kwcall_type = (jl_datatype_t*)jl_typeof(kwcall_func);
     jl_atomic_store_relaxed(&jl_kwcall_type->name->max_args, 0);
-
-    // Initialize TypeApp type reference for mutually recursive types
-    jl_typeapp_type = (jl_datatype_t*)core("TypeApp");
 
     jl_weakref_type = (jl_datatype_t*)core("WeakRef");
     jl_vecelement_typename = ((jl_datatype_t*)jl_unwrap_unionall(core("VecElement")))->name;

@@ -346,7 +346,7 @@ unsigned jl_special_vector_alignment(size_t nfields, jl_value_t *t)
 
 STATIC_INLINE int jl_is_datatype_make_singleton(jl_datatype_t *d) JL_NOTSAFEPOINT
 {
-    // Check d->layout first to avoid NULL dereference (can be NULL during typegroup resolution)
+    // Check d->layout first to avoid NULL dereference
     return d->layout && d->isconcretetype && jl_datatype_size(d) == 0 && d->layout->npointers == 0 && !d->name->mutabl; // implies jl_is_layout_opaque
 }
 
@@ -698,9 +698,6 @@ void jl_compute_field_offsets(jl_datatype_t *st)
                 st->has_concrete_subtype = !jl_is_datatype(fld) || ((jl_datatype_t *)fld)->has_concrete_subtype;
         }
         // compute layout for the wrapper object if the field types have no free variables
-        // During typegroup resolution, isconcretetype may be temporarily 0, but we should
-        // still compute the layout if the type doesn't actually have free type vars.
-        // jl_has_fixed_layout may return 0 due to conservative checks on Tuple fields.
         if (!st->isconcretetype && !jl_has_fixed_layout(st) && jl_has_free_typevars((jl_value_t*)st)) {
             assert(st == w); // otherwise caller should not have requested this layout
             return;
@@ -2401,197 +2398,6 @@ JL_DLLEXPORT int jl_nth_pointer_isdefined(jl_value_t *v, size_t i)
     return get_nth_pointer(v, i) != NULL;
 }
 
-// ============================================================================
-// Mutually Recursive Types Resolution
-// ============================================================================
-
-// Cache for TypeApp DataType (looked up from Core after boot.jl loads)
-jl_datatype_t *jl_typeapp_type = NULL;
-
-// Type predicate for TypeApp
-int jl_is_typeapp(jl_value_t *v) JL_NOTSAFEPOINT {
-    return jl_typeapp_type != NULL && jl_typeis(v, jl_typeapp_type);
-}
-
-// Forward declaration
-static jl_value_t *resolve_type_refs(jl_value_t *t, htable_t *subst_map);
-
-// Check if a typename is reachable from a type through struct fields
-// This is used to detect cycles in type definitions for mayinlinealloc
-// visited: hash table of already-visited typenames (to avoid infinite loops)
-static int is_typename_reachable(jl_value_t *t, jl_typename_t *target, htable_t *visited) JL_NOTSAFEPOINT
-{
-    if (t == NULL)
-        return 0;
-    if (jl_is_typevar(t))
-        return 0;  // Type variables don't affect this check
-    if (jl_is_datatype(t)) {
-        jl_datatype_t *dt = (jl_datatype_t*)t;
-        // Direct match
-        if (dt->name == target)
-            return 1;
-        // Check type parameters
-        jl_svec_t *params = dt->parameters;
-        size_t np = jl_svec_len(params);
-        for (size_t i = 0; i < np; i++) {
-            if (is_typename_reachable(jl_svecref(params, i), target, visited))
-                return 1;
-        }
-        // Follow into struct fields if not already visited
-        // For parametric instantiations (like TG_B{T}) that may not have types set yet,
-        // fall back to the primary type's fields via the wrapper.
-        jl_svec_t *types = dt->types;
-        if (types == NULL && dt->name->wrapper != NULL) {
-            jl_datatype_t *primary = (jl_datatype_t*)jl_unwrap_unionall(dt->name->wrapper);
-            if (jl_is_datatype(primary))
-                types = primary->types;
-        }
-        if (types == NULL)
-            return 1; // if types aren't computable, conservatively assume potentially recursive
-        if (ptrhash_get(visited, dt) == HT_NOTFOUND) {
-            ptrhash_put(visited, dt, dt);
-            size_t nf = jl_svec_len(types);
-            for (size_t i = 0; i < nf; i++) {
-                if (is_typename_reachable(jl_svecref(types, i), target, visited))
-                    return 1;
-            }
-        }
-        return 0;
-    }
-    if (jl_is_uniontype(t)) {
-        jl_uniontype_t *u = (jl_uniontype_t*)t;
-        return is_typename_reachable(u->a, target, visited) ||
-               is_typename_reachable(u->b, target, visited);
-    }
-    if (jl_is_unionall(t)) {
-        jl_unionall_t *ua = (jl_unionall_t*)t;
-        return is_typename_reachable(ua->body, target, visited);
-    }
-    return 0;
-}
-
-// Resolve type references, substituting TypeVars/TypeApps with their resolved DataTypes
-static jl_value_t *resolve_type_refs(jl_value_t *t, htable_t *subst_map)
-{
-    // TypeVar -> look up in substitution map
-    if (jl_is_typevar(t)) {
-        jl_value_t *dt = (jl_value_t*)ptrhash_get(subst_map, t);
-        if (dt != HT_NOTFOUND)
-            return dt;
-        // Not a typegroup placeholder TypeVar - return as-is
-        return t;
-    }
-
-    // TypeApp -> collect head and all params from nested chain, resolve, apply
-    if (jl_is_typeapp(t)) {
-        // Check if already resolved (cached in subst_map)
-        jl_value_t *cached = (jl_value_t*)ptrhash_get(subst_map, t);
-        if (cached != HT_NOTFOUND)
-            return cached;
-        // Collect params from the nested TypeApp chain
-        // TypeApp(TypeApp(head, p1), p2) => head, [p1, p2]
-        jl_value_t *head = t;
-        size_t n = 0;
-        while (jl_is_typeapp(head)) {
-            n++;
-            head = ((jl_typeapp_t*)head)->head;
-        }
-        JL_GC_PUSH1(&head);
-        jl_value_t **resolved;
-        JL_GC_PUSHARGS(resolved, n);
-        // Walk the chain again to collect and resolve params
-        jl_value_t *cur = t;
-        for (size_t i = n; i > 0; i--) {
-            jl_typeapp_t *ta = (jl_typeapp_t*)cur;
-            resolved[i - 1] = resolve_type_refs(ta->param, subst_map);
-            cur = ta->head;
-        }
-        jl_value_t *result;
-        // Special case: Union is stored as TypeApp with head == Union
-        if (head == (jl_value_t*)jl_uniontype_type) {
-            result = jl_type_union(resolved, n);
-        } else {
-            // Resolve the head type
-            head = resolve_type_refs(head, subst_map);
-            // For parametric types, we need the wrapper (UnionAll), not the DataType
-            if (jl_is_datatype(head) && ((jl_datatype_t*)head)->name->wrapper != NULL) {
-                head = ((jl_datatype_t*)head)->name->wrapper;
-            }
-            result = jl_apply_type(head, resolved, n);
-        }
-        // Cache the result
-        ptrhash_put(subst_map, t, result);
-        JL_GC_POP();  // resolved
-        JL_GC_POP();  // head
-        return result;
-    }
-
-    // Regular UnionAll -> resolve body if needed
-    if (jl_is_unionall(t)) {
-        jl_unionall_t *ua = (jl_unionall_t*)t;
-        jl_value_t *body = resolve_type_refs(ua->body, subst_map);
-        if (body == ua->body)
-            return t;
-        JL_GC_PUSH1(&body);
-        jl_value_t *result = jl_type_unionall(ua->var, body);
-        JL_GC_POP();
-        return result;
-    }
-
-    // Regular Union -> resolve each member if needed
-    if (jl_is_uniontype(t)) {
-        jl_uniontype_t *u = (jl_uniontype_t*)t;
-        jl_value_t *a = resolve_type_refs(u->a, subst_map);
-        JL_GC_PUSH1(&a);
-        jl_value_t *b = resolve_type_refs(u->b, subst_map);
-        if (a == u->a && b == u->b) {
-            JL_GC_POP();
-            return t;
-        }
-        jl_value_t *types[2] = {a, b};
-        jl_value_t *result = jl_type_union(types, 2);
-        JL_GC_POP();
-        return result;
-    }
-
-    // DataType with parameters -> resolve parameters if any contain TypeVar/TypeApp refs
-    if (jl_is_datatype(t)) {
-        jl_datatype_t *dt = (jl_datatype_t*)t;
-        jl_svec_t *params = dt->parameters;
-        size_t n = jl_svec_len(params);
-        if (n == 0)
-            return t;
-        int changed = 0;
-        jl_value_t **resolved;
-        JL_GC_PUSHARGS(resolved, n);
-        for (size_t i = 0; i < n; i++) {
-            jl_value_t *orig = jl_svecref(params, i);
-            resolved[i] = resolve_type_refs(orig, subst_map);
-            if (resolved[i] != orig)
-                changed = 1;
-        }
-        if (!changed) {
-            JL_GC_POP();
-            return t;
-        }
-        jl_value_t *result = jl_apply_type((jl_value_t*)dt->name->wrapper, resolved, n);
-        JL_GC_POP();
-        return result;
-    }
-
-    return t;
-}
-
-// Helper to unwrap UnionAlls to get the underlying DataType
-// For parametric types, results[i] is a UnionAll wrapping the DataType
-// For non-parametric types, results[i] IS the DataType
-static jl_datatype_t *unwrap_to_datatype(jl_value_t *v) JL_NOTSAFEPOINT
-{
-    while (jl_is_unionall(v))
-        v = ((jl_unionall_t*)v)->body;
-    return (jl_datatype_t*)v;
-}
-
 // Check if `super` is a valid supertype for subtyping.
 // Throws when invalid; returns otherwise.
 void jl_check_valid_supertype(jl_value_t *super, const char *type_name)
@@ -2649,240 +2455,69 @@ void jl_check_field_types(jl_svec_t *ftypes, jl_sym_t *type_name)
     }
 }
 
-// Resolve multiple typegroup types atomically into real DataTypes
-// Arguments: module, SimpleVector of TypeVars, SimpleVector of struct info SimpleVectors
-// Each struct info svec contains:
-//   (parameters, fieldnames, fieldattrs, mutabl, min_initialized, super, fieldtypes)
-// Returns: tuple of resolved types in the same order
-JL_DLLEXPORT jl_value_t *jl_resolve_typegroup(jl_module_t *module, jl_svec_t *typevars, jl_svec_t *struct_infos)
+// Check whether `target` is reachable from `t` by following both type
+// parameters and the field types of every encountered DataType.
+//
+// Unlike `references_name` (in builtins.c), which only follows type
+// parameters, this walks transitively through field types of dependent
+// DataTypes (with `visited` as a cycle-breaker) and is therefore able to
+// detect inline-layout cycles that arise from mutually-recursive types
+// whose definitions are finalized one at a time (e.g. via the
+// incomplete-types deferral mechanism): when a struct `B` is finalized
+// before its sibling `A` and `A` later references `B` whose fields in turn
+// reference `A`, the indirect cycle would be invisible to
+// `references_name`.
+//
+// If a DataType with `types == NULL` is encountered (e.g. a placeholder
+// published by the incomplete-types lowering), the function conservatively
+// reports reachability, since the eventual field types may close a cycle.
+int jl_is_typename_reachable(jl_value_t *t, jl_typename_t *target, htable_t *visited) JL_NOTSAFEPOINT
 {
-    size_t n = jl_svec_len(typevars);
-    if (n == 0)
-        return jl_f_tuple(NULL, NULL, 0);
-
-    // Allocate arrays for tracking
-    jl_datatype_t **datatypes = (jl_datatype_t**)alloca(n * sizeof(jl_datatype_t*));
-    jl_value_t **results = (jl_value_t**)alloca(n * sizeof(jl_value_t*));
-    memset(datatypes, 0, n * sizeof(jl_datatype_t*));
-    memset(results, 0, n * sizeof(jl_value_t*));
-
-    // GC roots for the datatypes we create
-    JL_GC_PUSHARGS(results, n);
-
-    htable_t subst_map;
-    htable_new(&subst_map, n);
-
-    // Steps 1-4: Create types, resolve references using subst_map
-    { JL_TRY {
-        // Step 1: Create empty DataTypes for each type in the typegroup
-        for (size_t i = 0; i < n; i++) {
-            jl_tvar_t *tv = (jl_tvar_t*)jl_svecref(typevars, i);
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            jl_sym_t *name = tv->name;
-
-            // Read struct info fields:
-            // 0: parameters, 1: fieldnames, 2: fieldattrs, 3: mutabl, 4: min_initialized, 5: super, 6: fieldtypes
-            jl_svec_t *fieldnames = (jl_svec_t*)jl_svecref(info, 1);
-            int mutabl = jl_unbox_bool(jl_svecref(info, 3));
-            int min_initialized = (int)jl_unbox_long(jl_svecref(info, 4));
-            int abstract = 0;  // typegroup structs are not abstract
-
-            // Root tv, info, fieldnames across allocations
-            JL_GC_PUSH3(&tv, &info, &fieldnames);
-
-            datatypes[i] = jl_new_uninitialized_datatype();
-            results[i] = (jl_value_t*)datatypes[i];
-
-            // Create typename
-            jl_typename_t *tn = jl_new_typename_in(name, module, abstract, mutabl);
-            datatypes[i]->name = tn;
-            jl_gc_wb(datatypes[i], tn);
-            tn->names = fieldnames;
-            jl_gc_wb(tn, fieldnames);
-            tn->n_uninitialized = (int32_t)(jl_svec_len(fieldnames) - min_initialized);
-
-            // Set up initial values
-            datatypes[i]->super = jl_any_type;
-            datatypes[i]->parameters = jl_emptysvec;
-            datatypes[i]->types = NULL;
-
-            // Build substitution map: TypeVar -> datatype
-            ptrhash_put(&subst_map, tv, datatypes[i]);
-            JL_GC_POP();
+    if (t == NULL)
+        return 0;
+    if (jl_is_typevar(t))
+        return 0;
+    if (jl_is_datatype(t)) {
+        jl_datatype_t *dt = (jl_datatype_t*)t;
+        if (dt->name == target)
+            return 1;
+        jl_svec_t *params = dt->parameters;
+        size_t np = jl_svec_len(params);
+        for (size_t i = 0; i < np; i++) {
+            if (jl_is_typename_reachable(jl_svecref(params, i), target, visited))
+                return 1;
         }
-
-        // Step 2: Resolve type parameters and set up wrapper UnionAlls
-        for (size_t i = 0; i < n; i++) {
-            jl_tvar_t *tv = (jl_tvar_t*)jl_svecref(typevars, i);
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            jl_svec_t *params = (jl_svec_t*)jl_svecref(info, 0);
-
-            datatypes[i]->parameters = params;
-            jl_gc_wb(datatypes[i], params);
-
-            // Create wrapper UnionAll chain
-            if (datatypes[i]->name->wrapper == NULL) {
-                jl_value_t *wrapper = (jl_value_t*)datatypes[i];
-                JL_GC_PUSH3(&tv, &params, &wrapper);
-                jl_setup_type_wrapper(datatypes[i]->name, params, &wrapper);
-                results[i] = wrapper;
-                // Update substitution map to use wrapper (UnionAll) for parametric types
-                ptrhash_put(&subst_map, tv, results[i]);
-                JL_GC_POP();
-            }
-            else {
-                JL_GC_PUSH1(&tv);
-                ptrhash_put(&subst_map, tv, results[i]);
-                JL_GC_POP();
+        // Follow into field types. For parametric instantiations whose
+        // `types` slot is not yet populated, fall back to the primary
+        // type's field types via the wrapper.
+        jl_svec_t *types = dt->types;
+        if (types == NULL && dt->name->wrapper != NULL) {
+            jl_datatype_t *primary = (jl_datatype_t*)jl_unwrap_unionall(dt->name->wrapper);
+            if (jl_is_datatype(primary))
+                types = primary->types;
+        }
+        if (types == NULL)
+            return 1; // conservative: fields not yet known, may close a cycle
+        if (ptrhash_get(visited, dt) == HT_NOTFOUND) {
+            ptrhash_put(visited, dt, dt);
+            size_t nf = jl_svec_len(types);
+            for (size_t i = 0; i < nf; i++) {
+                if (jl_is_typename_reachable(jl_svecref(types, i), target, visited))
+                    return 1;
             }
         }
-
-        // Step 3: Resolve supertypes (after wrapper UnionAlls are set up)
-        for (size_t i = 0; i < n; i++) {
-            jl_tvar_t *tv = (jl_tvar_t*)jl_svecref(typevars, i);
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            jl_value_t *super = jl_svecref(info, 5);
-            if (super != jl_nothing && super != NULL) {
-                const char *type_name = jl_symbol_name(tv->name);
-                jl_value_t *resolved_super = NULL;
-                JL_GC_PUSH3(&tv, &super, &resolved_super);
-                resolved_super = resolve_type_refs(super, &subst_map);
-                // Check self-subtyping before jl_check_valid_supertype, which
-                // calls jl_subtype and would crash on types with super == NULL.
-                if (jl_is_datatype(resolved_super) &&
-                    datatypes[i]->name == ((jl_datatype_t*)resolved_super)->name)
-                    jl_errorf("invalid subtyping in definition of %s: a type cannot subtype itself.", type_name);
-                jl_check_valid_supertype(resolved_super, type_name);
-                datatypes[i]->super = (jl_datatype_t*)resolved_super;
-                jl_gc_wb(datatypes[i], datatypes[i]->super);
-                JL_GC_POP();
-            }
-        }
-
-        // Note: circular supertype chain checking is not needed here because
-        // typegroup only supports struct definitions (not abstract types), so
-        // types within the group can never be valid supertypes of each other.
-        // Self-subtyping is already caught by the check above.
-
-        // Step 3.5: Precompute hash values BEFORE resolving field types
-        for (size_t i = 0; i < n; i++) {
-            jl_datatype_t *dt = unwrap_to_datatype(results[i]);
-            JL_GC_PUSH1(&dt);
-            jl_precompute_memoized_dt(dt, 0);
-            dt->isconcretetype = 0;  // Will be set properly after layout
-            JL_GC_POP();
-        }
-
-        // Step 4: Resolve field types
-        for (size_t i = 0; i < n; i++) {
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            jl_svec_t *is_types = (jl_svec_t*)jl_svecref(info, 6);
-            jl_svec_t *ftypes = NULL;
-            JL_GC_PUSH2(&is_types, &ftypes);
-            size_t nf = jl_svec_len(is_types);
-            ftypes = jl_alloc_svec(nf);
-            for (size_t j = 0; j < nf; j++) {
-                jl_value_t *ft = jl_svecref(is_types, j);
-                jl_value_t *resolved = resolve_type_refs(ft, &subst_map);
-                jl_svecset(ftypes, j, resolved);
-            }
-            jl_tvar_t *tv = (jl_tvar_t*)jl_svecref(typevars, i);
-            jl_check_field_types(ftypes, tv->name);
-            jl_datatype_t *dt = unwrap_to_datatype(results[i]);
-            dt->types = ftypes;
-            jl_gc_wb(dt, ftypes);
-            JL_GC_POP();
-        }
+        return 0;
     }
-    JL_CATCH {
-        htable_free(&subst_map);
-        JL_GC_POP();
-        jl_rethrow();
-    } }
-    htable_free(&subst_map);
-
-    // Steps 5-6: Compute layouts and finalize types (subst_map no longer needed)
-    { JL_TRY {
-        // Step 5a: Compute mayinlinealloc for ALL types before computing layouts.
-        // jl_compute_field_offsets uses mayinlinealloc from field types (via
-        // jl_datatype_isinlinealloc), so all types need correct values first.
-        // Mirrors jl_new_datatype: set mayinlinealloc=1 for immutable types,
-        // then _typebody! sets it to 0 if self-recursion is detected.
-        for (size_t i = 0; i < n; i++) {
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            int mutabl = jl_unbox_bool(jl_svecref(info, 3));
-            jl_datatype_t *dt = unwrap_to_datatype(results[i]);
-            if (!mutabl && dt->types != NULL) {
-                size_t nf = jl_svec_len(dt->types);
-                // Mirror _typebody!: if the supertype can reference this type,
-                // we can't inline-allocate (the layout may not be known yet).
-                htable_t visited;
-                htable_new(&visited, 8);
-                int super_refs = is_typename_reachable((jl_value_t*)dt->super, dt->name, &visited);
-                htable_free(&visited);
-                if (nf == 0 || !super_refs) {
-                    htable_new(&visited, 8);
-                    int mayinlinealloc = 1;
-                    for (size_t j = 0; j < nf && mayinlinealloc; j++) {
-                        jl_value_t *fld = jl_svecref(dt->types, j);
-                        if (is_typename_reachable(fld, dt->name, &visited))
-                            mayinlinealloc = 0;
-                    }
-                    htable_free(&visited);
-                    dt->name->mayinlinealloc = mayinlinealloc;
-                }
-            }
-        }
-
-        // Step 5b: Process field attributes and compute layouts
-        for (size_t i = 0; i < n; i++) {
-            jl_svec_t *info = (jl_svec_t*)jl_svecref(struct_infos, i);
-            jl_svec_t *fattrs = (jl_svec_t*)jl_svecref(info, 2);
-            jl_svec_t *fnames = (jl_svec_t*)jl_svecref(info, 1);
-            int mutabl = jl_unbox_bool(jl_svecref(info, 3));
-
-            jl_datatype_t *dt = unwrap_to_datatype(results[i]);
-            JL_GC_PUSH3(&dt, &fattrs, &fnames);
-
-            uint32_t *atomicfields = NULL;
-            uint32_t *constfields = NULL;
-            jl_process_field_attrs(fattrs, fnames, mutabl, 1, &atomicfields, &constfields);
-            dt->name->atomicfields = atomicfields;
-            dt->name->constfields = constfields;
-
-            if (dt->types != NULL) {
-                jl_compute_field_offsets(dt);
-            }
-
-            jl_precompute_memoized_dt(dt, 0);
-            jl_maybe_allocate_singleton_instance(dt);
-            JL_GC_POP();
-        }
-
-        // Step 6: Reinstantiate inner types
-        for (size_t i = 0; i < n; i++) {
-            jl_datatype_t *dt = unwrap_to_datatype(results[i]);
-            JL_GC_PUSH1(&dt);
-            JL_TRY {
-                jl_reinstantiate_inner_types(dt);
-            }
-            JL_CATCH {
-                dt->name->partial = NULL;
-                JL_GC_POP();
-                jl_rethrow();
-            }
-            JL_GC_POP();
-        }
+    if (jl_is_uniontype(t)) {
+        jl_uniontype_t *u = (jl_uniontype_t*)t;
+        return jl_is_typename_reachable(u->a, target, visited) ||
+               jl_is_typename_reachable(u->b, target, visited);
     }
-    JL_CATCH {
-        JL_GC_POP();
-        jl_rethrow();
-    } }
-
-    // Build result tuple
-    jl_value_t *result = jl_f_tuple(NULL, results, n);
-    JL_GC_POP();
-    return result;
+    if (jl_is_unionall(t)) {
+        jl_unionall_t *ua = (jl_unionall_t*)t;
+        return jl_is_typename_reachable(ua->body, target, visited);
+    }
+    return 0;
 }
 
 #ifdef __cplusplus
