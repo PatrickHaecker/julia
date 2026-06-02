@@ -33,6 +33,66 @@ JL_DLLEXPORT _Atomic(const char *) jl_filename = "none"; // need to update jl_fp
 static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t *stmts, int fast, int need_value, const char **toplevel_filename, int *toplevel_lineno);
 
 htable_t jl_current_modules;
+
+// Call `Base.<name>(mod)` if Base is loaded and the binding exists; used to
+// notify the incomplete-type runtime of binding-state changes from C.
+static void jl_call_base_module_hook(jl_sym_t *name, jl_module_t *mod)
+{
+    if (jl_base_module == NULL)
+        return;
+    jl_binding_t *b = jl_get_module_binding(jl_base_module, name, 0);
+    if (b == NULL)
+        return;
+    size_t world = jl_atomic_load_acquire(&jl_world_counter);
+    jl_value_t *f = jl_get_binding_value_in_world(b, world);
+    if (f == NULL)
+        return;
+    jl_value_t **args;
+    JL_GC_PUSHARGS(args, 2);
+    args[0] = f;
+    args[1] = (jl_value_t*)mod;
+    jl_apply(args, 2);
+    JL_GC_POP();
+}
+
+// Attempt to register `orig` (a surface, pre-lowering AST) for re-evaluation
+// once the binding named by `exc` (an `UndefVarError`) becomes defined in
+// `mod`. Returns 1 if deferred, 0 otherwise. Safe to call only outside of
+// any active `JL_CATCH` block (it may invoke Julia code that throws).
+static int jl_try_defer_incomplete(jl_module_t *mod, jl_value_t *exc, jl_value_t *orig)
+{
+    if (jl_base_module == NULL)
+        return 0;
+    if (jl_typeof(exc) != (jl_value_t*)jl_undefvarerror_type)
+        return 0;
+    jl_binding_t *rb = jl_get_module_binding(jl_base_module, jl_symbol("incomplete_can_defer"), 0);
+    jl_binding_t *db = jl_get_module_binding(jl_base_module, jl_symbol("incomplete_defer"), 0);
+    if (rb == NULL || db == NULL)
+        return 0;
+    size_t world = jl_atomic_load_acquire(&jl_world_counter);
+    jl_value_t *rf = jl_get_binding_value_in_world(rb, world);
+    jl_value_t *df = jl_get_binding_value_in_world(db, world);
+    if (rf == NULL || df == NULL)
+        return 0;
+    int deferred = 0;
+    jl_value_t **args;
+    JL_GC_PUSHARGS(args, 4);
+    args[0] = rf;
+    args[1] = exc;
+    args[2] = (jl_value_t*)mod;
+    args[3] = orig;
+    jl_value_t *ok = jl_apply(args, 4);
+    if (ok == jl_true) {
+        args[0] = df;
+        args[1] = (jl_value_t*)mod;
+        args[2] = exc;
+        args[3] = orig;
+        jl_apply(args, 4);
+        deferred = 1;
+    }
+    JL_GC_POP();
+    return deferred;
+}
 jl_mutex_t jl_modules_mutex;
 
 // During incremental compilation, the following gets set
@@ -174,6 +234,9 @@ JL_DLLEXPORT jl_module_t *jl_begin_new_module(jl_module_t *parent_module, jl_sym
 }
 
 JL_DLLEXPORT void jl_end_new_module(jl_module_t *newm) {
+    // A deferred top-level definition whose dependency is never satisfied
+    // raises `UndefVarError` here, aborting module evaluation.
+    jl_call_base_module_hook(jl_symbol("incomplete_finalize"), newm);
     jl_value_t *form = NULL;
     JL_GC_PUSH1(&form);
     JL_LOCK(&jl_modules_mutex);
@@ -589,17 +652,42 @@ static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t 
     jl_task_t *ct = jl_current_task;
     size_t last_age = ct->world_age;
     jl_value_t *root = NULL;
-    JL_GC_PUSH1(&root);
+    jl_value_t *orig = NULL;
+    jl_value_t *caught = NULL;
+    JL_GC_PUSH3(&root, &orig, &caught);
     jl_value_t *res = jl_nothing;
     int i;
     for (i = 0; i < jl_array_nrows(stmts); i++) {
-        root = jl_array_ptr_ref(stmts, i);
+        orig = jl_array_ptr_ref(stmts, i);
+        root = orig;
         if (jl_needs_lowering(root)) {
             root = jl_svecref(jl_lower(root, m, *toplevel_filename, *toplevel_lineno, ~(size_t)0,
                                        need_value), 0);
         }
         ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
-        res = jl_toplevel_eval_flex(m, root, fast, 1, toplevel_filename, toplevel_lineno);
+        caught = NULL;
+        JL_TRY {
+            res = jl_toplevel_eval_flex(m, root, fast, 1, toplevel_filename, toplevel_lineno);
+        }
+        JL_CATCH {
+            jl_value_t *exc = jl_current_exception(ct);
+            if (jl_typeof(exc) == (jl_value_t*)jl_undefvarerror_type) {
+                caught = exc;
+            }
+            else {
+                jl_rethrow();
+            }
+        }
+        if (caught != NULL) {
+            ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+            if (!jl_try_defer_incomplete(m, caught, orig))
+                jl_throw(caught);
+            res = jl_nothing;
+        }
+        // Re-evaluate any deferred definition whose missing dependency was
+        // bound by this statement.
+        ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+        jl_call_base_module_hook(jl_symbol("incomplete_drain_ready"), m);
     }
     ct->world_age = last_age;
     JL_GC_POP();
@@ -816,24 +904,48 @@ JL_DLLEXPORT jl_value_t *jl_toplevel_eval_in(jl_module_t *m, jl_value_t *ex)
 {
     jl_check_top_level_effect(m, "eval");
     jl_value_t *v = NULL;
+    jl_value_t *caught = NULL;
     int last_lineno = jl_atomic_load_relaxed(&jl_lineno);
     const char *last_filename = jl_atomic_load_relaxed(&jl_filename);
     jl_task_t *ct = jl_current_task;
     jl_atomic_store_relaxed(&jl_lineno, 1);
     jl_atomic_store_relaxed(&jl_filename, "none");
     size_t last_age = ct->world_age;
+    JL_GC_PUSH2(&ex, &caught);
     JL_TRY {
         ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
         v = jl_toplevel_eval(m, ex);
     }
     JL_CATCH {
-        jl_atomic_store_relaxed(&jl_lineno, last_lineno);
-        jl_atomic_store_relaxed(&jl_filename, last_filename);
-        jl_rethrow();
+        jl_value_t *exc = jl_current_exception(ct);
+        if (jl_typeof(exc) == (jl_value_t*)jl_undefvarerror_type) {
+            caught = exc;
+        }
+        else {
+            jl_atomic_store_relaxed(&jl_lineno, last_lineno);
+            jl_atomic_store_relaxed(&jl_filename, last_filename);
+            jl_rethrow();
+        }
     }
+    if (caught != NULL) {
+        ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+        if (!jl_try_defer_incomplete(m, caught, ex)) {
+            jl_atomic_store_relaxed(&jl_lineno, last_lineno);
+            jl_atomic_store_relaxed(&jl_filename, last_filename);
+            jl_throw(caught);
+        }
+        v = jl_nothing;
+    }
+    // Re-evaluate any deferred definition whose missing dependency was bound
+    // by this statement. `jl_eval_toplevel_stmts` already drains between items
+    // in its loop, but `Core.eval` and other single-statement entries go
+    // through this path instead.
+    ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+    jl_call_base_module_hook(jl_symbol("incomplete_drain_ready"), m);
     jl_atomic_store_relaxed(&jl_lineno, last_lineno);
     jl_atomic_store_relaxed(&jl_filename, last_filename);
     ct->world_age = last_age;
+    JL_GC_POP();
     assert(v);
     return v;
 }
@@ -855,7 +967,9 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
     jl_value_t *result = jl_nothing;
     jl_value_t *ast = NULL;
     jl_value_t *expression = NULL;
-    JL_GC_PUSH3(&ast, &result, &expression);
+    jl_value_t *orig = NULL;
+    jl_value_t *caught = NULL;
+    JL_GC_PUSH5(&ast, &result, &expression, &orig, &caught);
 
     ast = jl_svecref(jl_parse(jl_string_data(text), jl_string_len(text),
                               filename, 1, 0, (jl_value_t*)jl_all_sym, module), 0);
@@ -882,9 +996,30 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
                 jl_atomic_store_relaxed(&jl_lineno, lineno);
                 continue;
             }
+            orig = expression;
             expression = jl_svecref(jl_lower(expression, module, jl_string_data(filename), lineno, ~(size_t)0, 1), 0);
             ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
-            result = jl_toplevel_eval_flex(module, expression, 1, 1, &filename_str, &lineno);
+            caught = NULL;
+            JL_TRY {
+                result = jl_toplevel_eval_flex(module, expression, 1, 1, &filename_str, &lineno);
+            }
+            JL_CATCH {
+                jl_value_t *exc = jl_current_exception(ct);
+                if (jl_typeof(exc) == (jl_value_t*)jl_undefvarerror_type) {
+                    caught = exc;
+                }
+                else {
+                    jl_rethrow();
+                }
+            }
+            if (caught != NULL) {
+                ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+                if (!jl_try_defer_incomplete(module, caught, orig))
+                    jl_throw(caught);
+                result = jl_nothing;
+            }
+            ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+            jl_call_base_module_hook(jl_symbol("incomplete_drain_ready"), module);
         }
         ct->world_age = last_age;
     }
