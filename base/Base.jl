@@ -106,6 +106,9 @@ include("condition.jl")
 include("threads.jl")
 include("lock.jl")
 
+# Incomplete type definitions
+include("incompletetypes.jl")
+
 # strings & printing
 include("intfuncs.jl")
 include("strings/strings.jl")
