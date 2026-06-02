@@ -2135,6 +2135,12 @@ JL_CALLABLE(jl_f__structtype)
     dt = jl_new_datatype((jl_sym_t*)args[1], (jl_module_t*)args[0], NULL, (jl_svec_t*)args[2],
                          (jl_svec_t*)fieldnames, NULL, (jl_svec_t*)fieldattrs,
                          0, args[5]==jl_true ? 1 : 0, jl_unbox_long(args[6]));
+    // Initialize `super` to `Any` so that an incomplete-type placeholder
+    // published before `_setsuper!` has run is still safely traversable
+    // by code (e.g. method-table intersection) that walks the supertype
+    // chain. `_setsuper!` then overrides this default exactly once.
+    dt->super = (jl_datatype_t*)jl_any_type;
+    jl_gc_wb(dt, jl_any_type);
     return dt->name->wrapper;
 }
 
@@ -2145,6 +2151,11 @@ JL_CALLABLE(jl_f__abstracttype)
     JL_TYPECHK(_abstracttype, symbol, args[1]);
     JL_TYPECHK(_abstracttype, simplevector, args[2]);
     jl_datatype_t *dt = jl_new_abstracttype(args[1], (jl_module_t*)args[0], NULL, (jl_svec_t*)args[2]);
+    // See `_structtype`: initialise `super` to `Any` so a partially-built
+    // abstract type published as an incomplete-type placeholder before
+    // `_setsuper!` runs is still safely traversable.
+    dt->super = (jl_datatype_t*)jl_any_type;
+    jl_gc_wb(dt, jl_any_type);
     return dt->name->wrapper;
 }
 
@@ -2164,6 +2175,10 @@ JL_CALLABLE(jl_f__primitivetype)
         jl_errorf("invalid number of bits in primitive type %s",
                   jl_symbol_name((jl_sym_t*)name));
     jl_datatype_t *dt = jl_new_primitivetype(args[1], (jl_module_t*)args[0], NULL, (jl_svec_t*)args[2], nb);
+    // See `_structtype`: initialise `super` to `Any` for safe publication
+    // as an incomplete-type placeholder.
+    dt->super = (jl_datatype_t*)jl_any_type;
+    jl_gc_wb(dt, jl_any_type);
     return dt->name->wrapper;
 }
 
@@ -2173,7 +2188,10 @@ static void jl_set_datatype_super(jl_datatype_t *tt, jl_value_t *super)
     // which calls jl_subtype and would crash walking the supertype chain of a
     // type with super == NULL.
     const char *type_name = jl_symbol_name(tt->name->name);
-    if (tt->super != NULL)
+    // `_structtype` initialises super to `Any` so the partial type is safe
+    // to publish as an incomplete-type placeholder before `_setsuper!` has
+    // run. Allow `_setsuper!` to override that default exactly once.
+    if (tt->super != NULL && tt->super != (jl_datatype_t*)jl_any_type)
         jl_errorf("invalid subtyping in definition of %s: type already has a supertype.", type_name);
     if (jl_is_datatype(super) && tt->name == ((jl_datatype_t*)super)->name)
         jl_errorf("invalid subtyping in definition of %s: a type cannot subtype itself.", type_name);
@@ -2343,6 +2361,23 @@ JL_CALLABLE(jl_f__typebody)
     jl_value_t *tret = args[1];
     jl_datatype_t *dt = (jl_datatype_t*)jl_unwrap_unionall(args[1]);
     JL_TYPECHK(_typebody!, datatype, (jl_value_t*)dt);
+    if (nargs == 2 && prev != jl_false) {
+        // Abstract / primitive redefinition path: `prev` is a previously-bound
+        // type with the same name as `dt`. If it is an incomplete-type
+        // placeholder published by the trycatch in the abstract/primitive
+        // lowering (its supertype is still the default `Any`), adopt the
+        // freshly-resolved supertype carried by `dt` so the existing global
+        // identity is preserved. Otherwise the previous binding is already
+        // equivalent (per `_equiv_typedef`) and we just return it.
+        jl_datatype_t *prev_dt = (jl_datatype_t*)jl_unwrap_unionall(prev);
+        JL_TYPECHK(_typebody!, datatype, (jl_value_t*)prev_dt);
+        if (prev_dt->super == (jl_datatype_t*)jl_any_type &&
+                dt->super != (jl_datatype_t*)jl_any_type) {
+            prev_dt->super = dt->super;
+            jl_gc_wb(prev_dt, dt->super);
+        }
+        return prev;
+    }
     if (nargs == 3) {
         jl_value_t *ft = args[2];
         JL_TYPECHK(_typebody!, simplevector, ft);
@@ -2377,20 +2412,46 @@ JL_CALLABLE(jl_f__typebody)
                     jl_svecset(ft_subst, i, sub);
                 }
             }
-            int eq = equiv_field_types((jl_value_t*)prev_dt->types, (jl_value_t*)ft_subst);
-            JL_GC_POP();
-            if (eq) {
+            if (prev_dt->types == NULL) {
+                // `prev_dt` is an incomplete-type placeholder that was
+                // published globally before its field types could be
+                // evaluated. Finalise it in place so any other definitions
+                // which already captured `prev_dt` as a field type observe
+                // the completed type, then continue with `dt = prev_dt`.
+                if (jl_svec_len(prev_dt->parameters) != jl_svec_len(dt->parameters))
+                    jl_errorf("Internal Error: incomplete type has mismatched parameter count");
+                ft = (jl_value_t*)ft_subst;
+                JL_GC_POP();
+                // Adopt the stub's resolved supertype if the placeholder's
+                // own supertype expression originally raised `UndefVarError`
+                // (in which case the placeholder still carries the default
+                // `Any` set by `_structtype`). The redefinition equivalence
+                // check in `equiv_type` skips the super comparison precisely
+                // for this case, so the published placeholder must inherit
+                // the freshly-resolved supertype here.
+                if (prev_dt->super == (jl_datatype_t*)jl_any_type &&
+                        dt->super != (jl_datatype_t*)jl_any_type) {
+                    prev_dt->super = dt->super;
+                    jl_gc_wb(prev_dt, dt->super);
+                }
+                dt = prev_dt;
                 tret = prev;
-                goto have_type;
-            }
-            if (jl_svec_len(prev_dt->parameters) != jl_svec_len(dt->parameters))
-                jl_errorf("Internal Error: Types should not have been considered equivalent");
-            for (size_t i = 0; i < nf; i++) {
-                jl_value_t *elt = jl_svecref(ft, i);
-                for (int j = 0; j < jl_svec_len(prev_dt->parameters); ++j) {
-                    // Only the last svecset matters for semantics, but we re-use the GC root
-                    elt = jl_substitute_var(elt, (jl_tvar_t *)jl_svecref(prev_dt->parameters, j), jl_svecref(dt->parameters, j));
-                    jl_svecset(ft, i, elt);
+            } else {
+                int eq = equiv_field_types((jl_value_t*)prev_dt->types, (jl_value_t*)ft_subst);
+                JL_GC_POP();
+                if (eq) {
+                    tret = prev;
+                    goto have_type;
+                }
+                if (jl_svec_len(prev_dt->parameters) != jl_svec_len(dt->parameters))
+                    jl_errorf("Internal Error: Types should not have been considered equivalent");
+                for (size_t i = 0; i < nf; i++) {
+                    jl_value_t *elt = jl_svecref(ft, i);
+                    for (int j = 0; j < jl_svec_len(prev_dt->parameters); ++j) {
+                        // Only the last svecset matters for semantics, but we re-use the GC root
+                        elt = jl_substitute_var(elt, (jl_tvar_t *)jl_svecref(prev_dt->parameters, j), jl_svecref(dt->parameters, j));
+                        jl_svecset(ft, i, elt);
+                    }
                 }
             }
         }
@@ -2400,16 +2461,25 @@ JL_CALLABLE(jl_f__typebody)
         // able to compute the layout of the object before needing to
         // publish it, so we must assume it cannot be inlined, if that
         // check passes, then we also still need to check the fields too.
+        // Field types are walked transitively (through other DataTypes'
+        // fields) to catch inline-layout cycles that arise from
+        // mutually-recursive types finalized one at a time, e.g.
+        //   struct A{T}; o::Union{Nothing, B{T}}; end
+        //   struct B{T}; o::Union{Nothing, A{T}}; end
+        // where `references_name` (parameters-only) would miss the cycle.
         if (!dt->name->mutabl && (nf == 0 || !references_name((jl_value_t*)dt->super, dt->name, 0, 1))) {
             int mayinlinealloc = 1;
+            htable_t visited;
+            htable_new(&visited, 0);
             size_t i;
             for (i = 0; i < nf; i++) {
                 jl_value_t *fld = jl_svecref(ft, i);
-                if (references_name(fld, dt->name, 1, 1)) {
+                if (jl_is_typename_reachable(fld, dt->name, &visited)) {
                     mayinlinealloc = 0;
                     break;
                 }
             }
+            htable_free(&visited);
             dt->name->mayinlinealloc = mayinlinealloc;
         }
     }
@@ -2456,13 +2526,24 @@ static int equiv_type(jl_value_t *ta, jl_value_t *tb)
     jl_value_t *a=NULL, *b=NULL;
     int ok = 1;
     JL_GC_PUSH2(&a, &b);
-    a = jl_rewrap_unionall((jl_value_t*)dta->super, dta->name->wrapper);
-    b = jl_rewrap_unionall((jl_value_t*)dtb->super, dtb->name->wrapper);
-    // if tb recursively refers to itself in its supertype, assume that it refers to ta
-    // before checking whether the supertypes are equal
-    b = jl_substitute_datatype(b, dtb, dta);
-    if (!jl_types_equal(a, b))
-        goto no;
+    // Skip the supertype equality check when one side is an incomplete-type
+    // placeholder that has not yet had `_setsuper!` applied to it (its super
+    // is still the default `Any` from `_structtype` and its types are unset).
+    // This lets the redefinition heuristic recognize the published placeholder
+    // as equivalent to the freshly-built stub during a retry of a definition
+    // whose supertype expression originally raised `UndefVarError`. The
+    // placeholder's super is then adopted from the stub in `_typebody!`.
+    int skip_super = (dta->types == NULL && dta->super == (jl_datatype_t*)jl_any_type) ||
+                     (dtb->types == NULL && dtb->super == (jl_datatype_t*)jl_any_type);
+    if (!skip_super) {
+        a = jl_rewrap_unionall((jl_value_t*)dta->super, dta->name->wrapper);
+        b = jl_rewrap_unionall((jl_value_t*)dtb->super, dtb->name->wrapper);
+        // if tb recursively refers to itself in its supertype, assume that it refers to ta
+        // before checking whether the supertypes are equal
+        b = jl_substitute_datatype(b, dtb, dta);
+        if (!jl_types_equal(a, b))
+            goto no;
+    }
     {
         JL_TRY {
             a = jl_apply_type(dtb->name->wrapper, jl_svec_data(dta->parameters), jl_nparams(dta));

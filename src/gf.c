@@ -3155,6 +3155,42 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
     JL_GC_POP();
 }
 
+// Replace a live method's signature in place. Used by the incomplete-types
+// runtime to resolve dormant methods whose `sig` contains a placeholder
+// abstract `DataType`: when the real binding arrives, the placeholder must
+// be substituted in every dependent method's signature so the method
+// participates in normal dispatch.
+//
+// Implementation: soft-disable the existing typemap entry (which also
+// invalidates any specializations attached to the method), reset the
+// per-method state that `jl_method_table_insert` asserts as the
+// freshly-constructed default, install the new signature with a write
+// barrier, then re-insert into the same method table under the new key.
+//
+// Two world bumps occur (one inside `_disable`, one inside `_insert`); for
+// the placeholder use-case nothing observable can dispatch through the
+// intermediate world because no concrete value can be `isa` an as-yet-
+// unbound placeholder type, so no specializations or backedges exist
+// against the dormant signature.
+JL_DLLEXPORT void jl_method_resig(jl_method_t *m, jl_value_t *new_sig)
+{
+    if (!jl_is_method(m))
+        jl_type_error("jl_method_resig", (jl_value_t*)jl_method_type, (jl_value_t*)m);
+    if (!jl_is_tuple_type(new_sig) && !jl_is_unionall(new_sig))
+        jl_type_error("jl_method_resig", (jl_value_t*)jl_anytuple_type, new_sig);
+    jl_methtable_t *mt = jl_method_get_table(m);
+    if ((jl_value_t*)mt == jl_nothing)
+        jl_error("jl_method_resig: method has no method table");
+    JL_GC_PUSH1(&new_sig);
+    jl_method_table_disable(m);
+    jl_atomic_store_relaxed(&m->primary_world, ~(size_t)0);
+    jl_atomic_store_relaxed(&m->dispatch_status, 0);
+    m->sig = new_sig;
+    jl_gc_wb(m, new_sig);
+    jl_method_table_insert(mt, m, NULL);
+    JL_GC_POP();
+}
+
 static void JL_NORETURN jl_method_error_bare(jl_value_t *f, jl_value_t *args, size_t world)
 {
     if (jl_methoderror_type) {
