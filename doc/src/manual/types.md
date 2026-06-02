@@ -510,13 +510,14 @@ ERROR: setfield!: const field .b of type Baz cannot be changed
 
 ## Mutually Recursive Types
 
-Because julia's top level scope is procedural, types defined later in a file are not available for
-earlier field types. This is generally not a problem if types are written in the order they are
-used, but of course this does not work if there are cycles in the field type definitions:
+Because Julia's top-level scope is procedural, types defined later in a file are not
+available to earlier field types. This is generally not a problem if types are written in
+the order they are used, but it does come up when there are cycles in the field-type
+definitions:
 
 ```julia
 struct Node
-    edges::Vector{Edge} # Error: Edge not defined
+    edges::Vector{Edge}
 end
 struct Edge
     from::Node
@@ -524,33 +525,44 @@ struct Edge
 end
 ```
 
-The `typegroup` block solves this by introducing temporary variables for all structs
-defined therein at the top of the block and then atomically defining them all together
-at the end of the block.
+Inside a module, Julia handles this through *incomplete types*: the reference to the
+not-yet-defined `Edge` is recorded, a placeholder is installed in `Node`'s field type,
+and the `struct` form is re-evaluated automatically once `Edge` becomes bound. By the
+end of module evaluation, both types are fully defined, in the order in which the
+missing names get resolved.
 
-```jldoctest recursivetypes
-julia> typegroup
-           struct Node
-               edges::Vector{Edge}
-           end
-           struct Edge
-               from::Node
-               to::Node
-           end
-       end
-
-julia> fieldtype(Node, :edges)
-Vector{Edge} (alias for Array{Edge, 1})
+```julia
+module Graph
+    struct Node
+        edges::Vector{Edge}   # incomplete until `Edge` is defined
+    end
+    struct Edge
+        from::Node
+        to::Node
+    end
+    # at this point both `Node` and `Edge` are complete and
+    # `fieldtype(Node, :edges) === Vector{Edge}`
+end
 ```
 
-!!! note
-    Only `struct` or `mutable struct` definitions are allowed inside a `typegroup` block;
-    All other declarations, including method definitions are disallowed (Inner constructor
-    definitions are allowed inside the `struct` definition and will semantically run
-    after all types have been atomically instantiated).
+The same mechanism applies to all *definitional* forms — `struct` field types,
+`abstract` and `primitive` supertypes, method signatures, `const T = …` type aliases,
+and `macro` argument annotations. References to undefined names in *executable*
+positions (function bodies, `const x = some_call()`, `Core.eval` of arbitrary code)
+still surface eagerly as an [`UndefVarError`](@ref), since those are typically
+programming errors rather than forward references.
+
+If a forward-referenced name is never bound by the time the module finishes evaluating,
+an [`Base.IncompleteTypeError`](@ref) is raised listing each unresolved name together
+with the source locations of the incomplete definitions that were waiting on it.
+
+At the REPL (in `Main`) the module-close hook does not run, so incomplete definitions
+linger until the missing name is bound. They can be inspected with
+[`InteractiveUtils.incomplete_definitions`](@ref).
 
 !!! compat "Julia 1.14"
-    The `typegroup` keyword requires at least Julia 1.14.
+    Incomplete type definitions require at least Julia 1.14. Earlier versions raised an
+    `UndefVarError` immediately on the forward reference.
 
 ## [Declared Types](@id man-declared-types)
 

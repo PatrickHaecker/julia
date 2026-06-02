@@ -496,11 +496,13 @@ of arbitrary code — surfaces eagerly as an `UndefVarError`, since such a refer
 typically a programming error rather than a forward reference.
 
 At the end of module evaluation, any name that was forward-referenced but never bound is
-reported through an `IncompleteTypeError` that lists each unresolved name, the source
-location of its first reference, and how many dependents are still waiting on it.
+reported through an [`Base.IncompleteTypeError`](@ref) that lists each unresolved name,
+the source location of its first reference, and how many dependents are still waiting on
+it.
 
 At the REPL (in `Main`), the close hook does not run, so unresolved forward references
-linger silently until you bind the missing name.
+linger silently until you bind the missing name. The pending definitions can be inspected
+with [`InteractiveUtils.incomplete_definitions`](@ref).
 
 ## Submodules and relative paths
 

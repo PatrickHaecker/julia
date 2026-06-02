@@ -93,6 +93,7 @@ public
 
 # Error handling
     exit_on_sigint,
+    IncompleteTypeError,
     windowserror,
 
 # Macros

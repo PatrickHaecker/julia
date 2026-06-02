@@ -36,6 +36,22 @@ struct IncompleteTypeEntry
     n_pending::Int          # how many replay finalizers are waiting
 end
 
+"""
+    IncompleteTypeError <: Exception
+
+Raised at module close when one or more *incomplete* definitions inside the
+module never became complete — that is, they referenced a name (typically a
+forward-declared type) that was never bound. A single `IncompleteTypeError`
+aggregates every unresolved name in the module, with each entry recording the
+missing binding, the source location of its first reference, and how many
+incomplete dependents (methods and pending replays) were still waiting on it.
+
+See also [`InteractiveUtils.incomplete_definitions`](@ref) for inspecting the
+pending dependents at the REPL, where the module-close hook does not run.
+
+!!! compat "Julia 1.14"
+    This exception type requires Julia 1.14 or later.
+"""
 struct IncompleteTypeError <: Exception
     mod::Module
     entries::Vector{IncompleteTypeEntry}
