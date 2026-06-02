@@ -1287,3 +1287,74 @@ end
     end
 end
 
+# Concurrency: the canonical (mod, name) -> IncompleteRef and placeholder
+# DataType invariants are guarded by `Base.incomplete_lock`. Stress the
+# registry from many tasks racing on the same name and on a fan of distinct
+# names; assert canonical uniqueness and that no finalizer is dropped.
+let
+    function _race(n::Int, body::Function)
+        barrier = Base.Event()
+        tasks = [Threads.@spawn (wait(barrier); body(i)) for i in 1:n]
+        notify(barrier)
+        return map(fetch, tasks)
+    end
+
+    @testset "incomplete types: concurrent canonical IncompleteRef" begin
+        eval(:(module _M_conc_ref end))
+        N = 64
+        refs = _race(N, i -> Base.get_or_create_incomplete_ref(_M_conc_ref, :Forward,
+                                                               Symbol("racer$i"), Int32(i)))
+        @test all(r -> r === refs[1], refs)
+        canonical = Base.find_incomplete_ref(_M_conc_ref, :Forward)
+        @test canonical === refs[1]
+        # Only one entry in the per-module table.
+        st = get(Base.incomplete_refs, _M_conc_ref, nothing)
+        @test st !== nothing && length(st) == 1
+    end
+
+    @testset "incomplete types: concurrent canonical placeholder" begin
+        eval(:(module _M_conc_ph end))
+        N = 64
+        phs = _race(N, _ -> Base.incomplete_placeholder(_M_conc_ph, :Forward))
+        @test all(p -> p === phs[1], phs)
+        ref = Base.find_incomplete_ref(_M_conc_ph, :Forward)
+        @test ref !== nothing && ref.placeholder === phs[1]
+        # Reverse map registered exactly once.
+        @test get(Base.incomplete_placeholders, phs[1], nothing) === ref
+    end
+
+    @testset "incomplete types: concurrent placeholders for distinct names" begin
+        eval(:(module _M_conc_distinct end))
+        N = 32
+        names = [Symbol("Forward_$i") for i in 1:N]
+        phs = _race(N, i -> Base.incomplete_placeholder(_M_conc_distinct, names[i]))
+        # Each name yields a distinct placeholder.
+        @test length(unique(objectid, phs)) == N
+        st = get(Base.incomplete_refs, _M_conc_distinct, nothing)
+        @test st !== nothing && length(st) == N
+        for (nm, ph) in zip(names, phs)
+            ref = st[nm]
+            @test ref.placeholder === ph
+            @test Base.incomplete_placeholders[ph] === ref
+        end
+    end
+
+    @testset "incomplete types: concurrent finalizer registration" begin
+        eval(:(module _M_conc_fin end))
+        N = 64
+        counter = Threads.Atomic{Int}(0)
+        _race(N, _ -> Base.incomplete_register_finalizer!(_M_conc_fin, :Forward,
+                                                          () -> Threads.atomic_add!(counter, 1),
+                                                          :concfin, Int32(0)))
+        ref = Base.find_incomplete_ref(_M_conc_fin, :Forward)
+        @test ref !== nothing
+        @test length(ref.pending_finalizers) == N
+        # Bind `Forward` and drain; every finalizer must run exactly once and
+        # the ref must be removed from the registry.
+        Core.eval(_M_conc_fin, :(const Forward = Int))
+        Base.incomplete_drain_ready(_M_conc_fin)
+        @test counter[] == N
+        @test Base.find_incomplete_ref(_M_conc_fin, :Forward) === nothing
+    end
+end
+
