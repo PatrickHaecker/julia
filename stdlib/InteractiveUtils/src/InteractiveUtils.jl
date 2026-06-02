@@ -387,4 +387,74 @@ function report_bug(kind)
     return @invokelatest BugReporting.make_interactive_report(kind, ARGS)
 end
 
+"""
+    IncompleteDefinition
+
+Descriptor for one top-level definition in a module that has been deferred
+because it references a not-yet-defined binding. Returned by
+[`incomplete_definitions`](@ref).
+
+Fields:
+
+- `name::Union{Symbol,Nothing}` — the name introduced by the deferred
+  definition (e.g. the struct or abstract type name), or `nothing` for
+  forms that don't bind a single user-visible name in the enclosing module
+  (in particular method definitions).
+- `waiting_for::Symbol` — the missing binding the definition is blocked on.
+- `file::Symbol` — source file of the deferred definition.
+- `line::Int` — source line of the deferred definition.
+
+!!! compat "Julia 1.14"
+    This type requires Julia 1.14 or later.
+"""
+struct IncompleteDefinition
+    name::Union{Symbol,Nothing}
+    waiting_for::Symbol
+    file::Symbol
+    line::Int
+end
+
+function Base.show(io::IO, d::IncompleteDefinition)
+    namestr = d.name === nothing ? "<method>" : string(d.name)
+    print(io, "IncompleteDefinition(", namestr, " waiting for `", d.waiting_for,
+          "` at ", d.file, ":", d.line, ")")
+end
+
+"""
+    incomplete_definitions(mod::Module = Main) -> Vector{IncompleteDefinition}
+
+List top-level definitions in `mod` that have been deferred because they
+reference a not-yet-defined binding in `mod` (see also the `UndefVarError`
+hint shown for such bindings).
+
+Returns an empty vector if no definitions are deferred in `mod`. Primarily
+useful at the REPL, where module-close finalization does not run and
+deferred definitions can otherwise linger silently.
+
+!!! compat "Julia 1.14"
+    This function requires Julia 1.14 or later.
+"""
+function incomplete_definitions(mod::Module = Main)
+    out = IncompleteDefinition[]
+    @lock Base.incomplete_lock begin
+        st = get(Base.incomplete_refs, mod, nothing)
+        st === nothing && return out
+        for (missing_sym, ref) in st
+            for d in ref.dependents
+                if d isa Method
+                    push!(out, IncompleteDefinition(
+                        nothing, missing_sym, d.file, Int(d.line)))
+                end
+            end
+            for pf in ref.pending_finalizers
+                push!(out, IncompleteDefinition(
+                    pf.defined_name, missing_sym, pf.srcfile, Int(pf.srcline)))
+            end
+        end
+    end
+    return out
+end
+
+public IncompleteDefinition, incomplete_definitions
+
 end

@@ -313,11 +313,34 @@ __repl_entry_lower_with_loc(mod::Module, @nospecialize(ast), toplevel_file::Ref{
 __repl_entry_eval_expanded_with_loc(mod::Module, @nospecialize(ast), toplevel_file::Ref{Ptr{UInt8}}, toplevel_line::Ref{Csize_t}) =
     ccall(:jl_toplevel_eval_flex, Any, (Any, Any, Cint, Cint, Ptr{Ptr{UInt8}}, Ptr{Csize_t}), mod, ast, 1, 1, toplevel_file, toplevel_line)
 
-function toplevel_eval_with_hooks(mod::Module, @nospecialize(ast), toplevel_file=Ref{Ptr{UInt8}}(Base.unsafe_convert(Ptr{UInt8}, :REPL)), toplevel_line=Ref{Csize_t}(1))
+function toplevel_eval_with_hooks(mod::Module, @nospecialize(ast), toplevel_file=Ref{Ptr{UInt8}}(Base.unsafe_convert(Ptr{UInt8}, :REPL)), toplevel_line=Ref{Csize_t}(1);
+                                  defer_target=nothing)
     if !isexpr(ast, :toplevel)
-        ast = invokelatest(__repl_entry_lower_with_loc, mod, ast, toplevel_file, toplevel_line)
-        check_for_missing_packages_and_run_hooks(ast)
-        return invokelatest(__repl_entry_eval_expanded_with_loc, mod, ast, toplevel_file, toplevel_line)
+        # The REPL pre-lowers and calls jl_toplevel_eval_flex directly, which
+        # bypasses the deferral/drain catch sites in toplevel.c. Mirror them
+        # here so an UndefVarError raised by a definitional surface form
+        # (e.g. `f(x::A) = x` when `A` isn't defined yet) is deferred
+        # instead of immediately surfaced, and so newly bound names drain
+        # any deferred definitions waiting on them. `defer_target` is the
+        # pre-ast-transform expression (when threaded through from
+        # `eval_user_input`), so wrappers introduced by transforms like
+        # `softscope` or `Revise.revise_first` don't hide the definitional
+        # head from `incomplete_can_defer`.
+        defer = defer_target === nothing ? ast : defer_target
+        local value
+        try
+            lowered = invokelatest(__repl_entry_lower_with_loc, mod, ast, toplevel_file, toplevel_line)
+            check_for_missing_packages_and_run_hooks(lowered)
+            value = invokelatest(__repl_entry_eval_expanded_with_loc, mod, lowered, toplevel_file, toplevel_line)
+        catch e
+            if Base.incomplete_try_defer(mod, e, defer)
+                value = nothing
+            else
+                rethrow()
+            end
+        end
+        Base.incomplete_drain_ready(mod)
+        return value
     end
     local value=nothing
     for i = 1:length(ast.args)
@@ -336,10 +359,11 @@ function eval_user_input(@nospecialize(ast), backend::REPLBackend, mod::Module)
                 put!(backend.response_channel, Pair{Any, Bool}(lasterr, true))
             else
                 backend.in_eval = true
+                orig_ast = ast
                 for xf in backend.ast_transforms
                     ast = Base.invokelatest(xf, ast)
                 end
-                value = toplevel_eval_with_hooks(mod, ast)
+                value = toplevel_eval_with_hooks(mod, ast; defer_target=orig_ast)
                 backend.in_eval = false
                 setglobal!(Base.MainInclude, :ans, value)
                 put!(backend.response_channel, Pair{Any, Bool}(value, false))

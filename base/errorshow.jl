@@ -1485,6 +1485,15 @@ function UndefVarError_hint(io::IO, ex::UndefVarError)
                 end
             elseif kind === PARTITION_KIND_GLOBAL || kind === PARTITION_KIND_UNDEF_CONST || kind == PARTITION_KIND_DECLARED
                 print(io, "\nSuggestion: add an appropriate import or assignment. This global was declared but not assigned.")
+                # Forward-reference hint: if some definition in `scope`
+                # already deferred itself waiting for this name, surface
+                # the original reference site so the user knows what's
+                # blocked on the missing binding.
+                ref = scope isa Module ? Base.find_incomplete_ref(scope, var) : nothing
+                if ref !== nothing && (ref.srcfile !== :none || ref.srcline != 0)
+                    print(io, "\nNote: this name is awaited by a forward reference at ",
+                          ref.srcfile, ":", ref.srcline, ".")
+                end
             elseif kind === PARTITION_KIND_FAILED
                 print(io, "\nHint: It looks like two or more modules export different ",
                 "bindings with this name, resulting in ambiguity. Try explicitly ",
