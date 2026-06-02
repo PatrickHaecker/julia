@@ -992,23 +992,56 @@
                             (call (core svec) ,@(map quotify field-names))
                             (call (core svec) ,@attrs)
                             ,mut ,min-initialized))
-            (call (core _setsuper!) ,name ,super)
-            (= ,hasprev (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false)) (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name)))
-            (= ,prev (if ,hasprev (globalref (thismodule) ,name) (false)))
-            (if ,hasprev
-                ;; if this is compatible with an old definition, use the old parameters, but the
-                ;; new object. This will fail to capture recursive cases, but the call to typebody!
-                ;; below is permitted to choose either type definition to put into the binding table
-                (block ,@(if (pair? params)
-                              `((= (tuple ,@params) (|.|
-                                                    ,(foldl (lambda (_ x) `(|.| ,x (quote body)))
-                                                            prev
-                                                            params)
-                                                    (quote parameters))))
-                              '())))
-            (= ,newdef (call (core _typebody!) ,prev ,name (call (core svec) ,@(insert-struct-shim field-types name))))
-            (const (globalref (thismodule) ,name) ,newdef)
-            (latestworld)
+            ;; Publish the incomplete `DataType` placeholder if either the
+            ;; supertype expression or the field-type evaluation raises a
+            ;; recoverable `UndefVarError`. The surface AST is then deferred
+            ;; by the C toplevel evaluator and retried once the missing
+            ;; dependency is bound. The placeholder is what lets mutually
+            ;; recursive struct definitions resolve references to this name
+            ;; on the sibling's first try; the eventual retry takes the
+            ;; `hasprev` path and `_typebody!` finalises this placeholder in
+            ;; place (including adopting the now-resolvable supertype) rather
+            ;; than allocating a new `DataType`. Non-recoverable errors
+            ;; propagate without publishing, leaving the binding unset.
+            ;; `_setsuper!` is included in the trycatch because the supertype
+            ;; expression may itself reference a sibling not-yet-defined
+            ;; struct (e.g. mutual recursion via `<: AbstractArray{Sibling}`).
+            (trycatch
+              (scope-block
+                (block
+                  (call (core _setsuper!) ,name ,super)
+                  (= ,hasprev (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false)) (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name)))
+                  (= ,prev (if ,hasprev (globalref (thismodule) ,name) (false)))
+                  (if ,hasprev
+                      ;; if this is compatible with an old definition, use the old parameters, but the
+                      ;; new object. This will fail to capture recursive cases, but the call to typebody!
+                      ;; below is permitted to choose either type definition to put into the binding table
+                      (block ,@(if (pair? params)
+                                    `((= (tuple ,@params) (|.|
+                                                          ,(foldl (lambda (_ x) `(|.| ,x (quote body)))
+                                                                  prev
+                                                                  params)
+                                                          (quote parameters))))
+                                    '())))
+                  (= ,newdef (call (core _typebody!) ,prev ,name (call (core svec) ,@(insert-struct-shim field-types name))))
+                  (const (globalref (thismodule) ,name) ,newdef)
+                  (latestworld)
+                  ;; `_typebody!` may have returned the previously-published
+                  ;; incomplete-type placeholder (rather than `,name`) by
+                  ;; finalising it in place. Rebind the outer local to the
+                  ;; resulting `DataType` so that subsequent constructor and
+                  ;; method definitions reference the same identity that was
+                  ;; bound to the global name.
+                  (= ,name ,newdef)))
+              (scope-block
+                (block
+                  (if (call (top incomplete_can_defer) (the_exception) (thismodule))
+                      (if (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                          (null)
+                          (block
+                            (const (globalref (thismodule) ,name) ,name)
+                            (latestworld))))
+                  (call (top rethrow)))))
             (null))))
        ;; Always define ctors even if we didn't change the definition.
        ;; If newdef===prev, then this is a bit suspect, since we don't know what might be
@@ -1028,44 +1061,90 @@
 (define (abstract-type-def-expr name params super)
   (receive
    (params bounds) (sparam-name-bounds params)
-   `(block
-     (global ,name)
-     (scope-block
-      (block
-       (local-def ,name)
-       ,@(map (lambda (v) `(local ,v)) params)
-       ,@(map (lambda (n v) (make-assignment n (bounds-to-TypeVar v #t))) params bounds)
-       (toplevel-only abstract_type)
-       (= ,name (call (core _abstracttype) (thismodule) (inert ,name) (call (core svec) ,@params)))
-       (call (core _setsuper!) ,name ,super)
-       (call (core _typebody!) (false) ,name)
-       (if (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
-               (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name))
-           (null)
-           (const (globalref (thismodule) ,name) ,name))
-       (latestworld)
-       (null))))))
+   (let ((prev    (make-ssavalue))
+         (hasprev (make-ssavalue))
+         (newdef  (make-ssavalue)))
+     `(block
+       (global ,name)
+       (scope-block
+        (block
+         (local-def ,name)
+         ,@(map (lambda (v) `(local ,v)) params)
+         ,@(map (lambda (n v) (make-assignment n (bounds-to-TypeVar v #t))) params bounds)
+         (toplevel-only abstract_type)
+         (= ,name (call (core _abstracttype) (thismodule) (inert ,name) (call (core svec) ,@params)))
+         ;; Mirror the struct-def trycatch so a not-yet-defined supertype
+         ;; (e.g. `abstract type A <: B end` with `B` unbound) publishes the
+         ;; partially-initialised `DataType` as an incomplete-type placeholder
+         ;; and defers the surface AST. On retry, `_typebody!`'s 2-arg form
+         ;; finalises the placeholder in place by adopting the freshly-
+         ;; resolved supertype, preserving identity for any references that
+         ;; captured the placeholder while waiting.
+         (trycatch
+           (scope-block
+             (block
+               (call (core _setsuper!) ,name ,super)
+               (= ,hasprev (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                              (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name)))
+               (= ,prev (if ,hasprev (globalref (thismodule) ,name) (false)))
+               (= ,newdef (call (core _typebody!) ,prev ,name))
+               (if (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                       (call (core _equiv_typedef) (globalref (thismodule) ,name) ,newdef))
+                   (null)
+                   (const (globalref (thismodule) ,name) ,newdef))
+               (latestworld)
+               (= ,name ,newdef)))
+           (scope-block
+             (block
+               (if (call (top incomplete_can_defer) (the_exception) (thismodule))
+                   (if (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                       (null)
+                       (block
+                         (const (globalref (thismodule) ,name) ,name)
+                         (latestworld))))
+               (call (top rethrow)))))
+         (null)))))))
 
 (define (primitive-type-def-expr n name params super)
   (receive
    (params bounds) (sparam-name-bounds params)
-   `(block
-     (global ,name)
-     (scope-block
-      (block
-       (local-def ,name)
-       ,@(map (lambda (v) `(local ,v)) params)
-       ,@(map (lambda (n v) (make-assignment n (bounds-to-TypeVar v #t))) params bounds)
-       (toplevel-only primitive_type)
-       (= ,name (call (core _primitivetype) (thismodule) (inert ,name) (call (core svec) ,@params) ,n))
-       (call (core _setsuper!) ,name ,super)
-       (call (core _typebody!) (false) ,name)
-       (if (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
-               (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name))
-           (null)
-           (const (globalref (thismodule) ,name) ,name))
-       (latestworld)
-       (null))))))
+   (let ((prev    (make-ssavalue))
+         (hasprev (make-ssavalue))
+         (newdef  (make-ssavalue)))
+     `(block
+       (global ,name)
+       (scope-block
+        (block
+         (local-def ,name)
+         ,@(map (lambda (v) `(local ,v)) params)
+         ,@(map (lambda (n v) (make-assignment n (bounds-to-TypeVar v #t))) params bounds)
+         (toplevel-only primitive_type)
+         (= ,name (call (core _primitivetype) (thismodule) (inert ,name) (call (core svec) ,@params) ,n))
+         ;; See `abstract-type-def-expr` for the trycatch+placeholder rationale.
+         (trycatch
+           (scope-block
+             (block
+               (call (core _setsuper!) ,name ,super)
+               (= ,hasprev (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                              (call (core _equiv_typedef) (globalref (thismodule) ,name) ,name)))
+               (= ,prev (if ,hasprev (globalref (thismodule) ,name) (false)))
+               (= ,newdef (call (core _typebody!) ,prev ,name))
+               (if (&& (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                       (call (core _equiv_typedef) (globalref (thismodule) ,name) ,newdef))
+                   (null)
+                   (const (globalref (thismodule) ,name) ,newdef))
+               (latestworld)
+               (= ,name ,newdef)))
+           (scope-block
+             (block
+               (if (call (top incomplete_can_defer) (the_exception) (thismodule))
+                   (if (call (core isdefinedglobal) (thismodule) (inert ,name) (false))
+                       (null)
+                       (block
+                         (const (globalref (thismodule) ,name) ,name)
+                         (latestworld))))
+               (call (top rethrow)))))
+         (null)))))))
 
 ;; take apart a type signature, e.g. T{X} <: S{Y}
 (define (analyze-type-sig ex)
@@ -1382,108 +1461,13 @@
                   (else '())))))
     (expand-forms
      (receive (name sdef fdef) (struct-def-expr sig fields mut #f)
+       ;; A struct that forward-references a binding may raise `UndefVarError`
+       ;; while evaluating its field types. The C toplevel evaluator catches
+       ;; that error and defers the original surface AST via `incomplete_*`.
+       ;; The incomplete `DataType` placeholder published before `_typebody!`
+       ;; (see `struct-def-expr`) remains globally visible so siblings can
+       ;; reference it; on retry, `_typebody!` finalises it in place.
        `(block (global ,name) ,sdef ,fdef (latestworld) (null))))))
-
-;; Replace (call (core apply_type) ...) with (call (core apply_type_or_typeapp) ...)
-;; in an expression tree. Used for typegroup to handle TypeVar/TypeApp references.
-(define (replace-type-constructors expr)
-  (cond ((not (pair? expr)) expr)
-        ((quoted? expr) expr)
-        ((and (eq? (car expr) 'call)
-              (pair? (cdr expr))
-              (equal? (cadr expr) '(core apply_type)))
-         `(call (core apply_type_or_typeapp) ,@(map replace-type-constructors (cddr expr))))
-        (else (map replace-type-constructors expr))))
-
-;; Extract a struct definition from a typegroup block child.
-;; Returns (values struct-expr doc-calls) where doc-calls is a list of
-;; documentation expressions to emit after the types are bound.
-;; A child may be a bare (struct ...) or a block from @doc macro expansion:
-;;   (block (= gensym (struct ...)) (call Docs.doc! ...) gensym)
-(define (typegroup-extract-struct x)
-  (cond ((and (pair? x) (eq? (car x) 'struct))
-         (values x '()))
-        ((and (pair? x) (eq? (car x) 'block)
-              (let ((body (cdr x)))
-                (and (pair? body)
-                     (pair? (car body))
-                     (eq? (caar body) '=)
-                     (pair? (cddar body))
-                     (let ((rhs (caddar body)))
-                       (and (pair? rhs) (eq? (car rhs) 'struct))))))
-         ;; Expanded @doc block: (block (= gensym (struct ...)) doc-calls... gensym)
-         (let* ((body (cdr x))
-                (struct-expr (caddar body))   ; the (struct ...) from (= gensym (struct ...))
-                (rest (cdr body))             ; everything after the assignment
-                ;; Drop the trailing gensym return value, keep the doc calls
-                (doc-calls (if (and (pair? rest) (not (null? (cdr rest))))
-                               (let loop ((r rest) (acc '()))
-                                 (if (null? (cdr r))
-                                     (reverse acc)  ; skip last element (the gensym)
-                                     (loop (cdr r) (cons (car r) acc))))
-                               '())))
-           (values struct-expr doc-calls)))
-        (else
-         (error (string "typegroup only supports struct definitions, got: " (deparse x))))))
-
-(define (expand-typegroup-def e)
-  (let* ((body (cadr e))
-         (stmts (if (and (pair? body) (eq? (car body) 'block))
-                    (cdr body)
-                    (list body))))
-    ;; First pass: collect names and process structs
-    (let loop ((remaining stmts)
-               (names '()) (sdefs '()) (fdefs '()) (info-vars '()) (doc-stmts '()))
-      (if (null? remaining)
-          ;; Generate the full lowered code
-          (let* ((names (reverse names))
-                 (sdefs (reverse sdefs))
-                 (fdefs (reverse fdefs))
-                 (info-vars (reverse info-vars))
-                 (doc-stmts (reverse doc-stmts))
-                 ;; Build the block structure:
-                 ;; 1. Declare all names as locals
-                 ;; 2. Create TypeVar placeholders for each name
-                 ;; 3. Run sdefs (assigns struct info svecs to SSA values)
-                 ;; 4. Resolve typegroup via C
-                 ;; 5. Bind to global constants
-                 ;; 6. Run fdefs (constructors) — outside scope-block so
-                 ;;    type names resolve to globals, not captured locals
-                 ;; 7. Run doc-stmts (documentation calls from @doc)
-                 (code `(block
-                         (scope-block
-                          (block
-                           ,@(map (lambda (n) `(local ,n)) names)
-                           ,@(map (lambda (n) `(= ,n (call (core TypeVar) (inert ,n)))) names)
-                           ,@sdefs
-                           (= (tuple ,@names)
-                              (call (core resolve_typegroup) (thismodule)
-                                    (call (core svec) ,@names)
-                                    (call (core svec) ,@info-vars)))
-                           ,@(map (lambda (n) `(const (globalref (thismodule) ,n) ,n)) names)
-                           (latestworld)
-                           (null)))
-                         ,@fdefs
-                         (latestworld)
-                         ,@doc-stmts
-                         (null)))
-                 (expanded (expand-forms code))
-                 (replaced (replace-type-constructors expanded)))
-            replaced)
-          (let ((x (car remaining)))
-            (cond ((linenum? x)
-                   (loop (cdr remaining) names sdefs fdefs info-vars doc-stmts))
-                  (else
-                   (receive (struct-expr doc-calls) (typegroup-extract-struct x)
-                     (let* ((mut (cadr struct-expr))
-                            (sig (caddr struct-expr))
-                            (fields (cdr (cadddr struct-expr)))
-                            (info-var (make-ssavalue)))
-                       (receive (name sdef fdef) (struct-def-expr sig fields mut info-var)
-                         (loop (cdr remaining)
-                               (cons name names) (cons sdef sdefs)
-                               (cons fdef fdefs) (cons info-var info-vars)
-                               (append (reverse doc-calls) doc-stmts))))))))))))
 
 ;; the following are for expanding `try` blocks
 
@@ -2696,7 +2680,6 @@
    'soft-let       (lambda (e) (expand-let e #f))
    'macro          expand-macro-def
    'struct         expand-struct-def
-   'typegroup      expand-typegroup-def
    'try            expand-try
 
    'lambda
