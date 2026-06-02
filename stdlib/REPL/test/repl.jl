@@ -6,6 +6,7 @@ using Random
 using Logging
 import REPL.LineEdit
 using Markdown
+using InteractiveUtils
 
 empty!(Base.Experimental._hint_handlers) # unregister error hints so they can be tested separately
 
@@ -1298,6 +1299,55 @@ end
     @test reply == Pair{Any, Bool}((2, 2), false)
     put!(backend.repl_channel, (nothing, -1))
     Base.wait(backend.backend_task)
+end
+
+# Definitional surface forms that reference a not-yet-defined name should be
+# silently deferred at the REPL and re-evaluated once the name is bound,
+# rather than surfacing the `UndefVarError` immediately (which would be
+# noise for the typical "define types in any order" REPL workflow).
+@testset "REPL defers incomplete definitions" begin
+    M = Module(:_REPL_incomplete_test_module)
+    Core.eval(M, :(using Base))
+    @test isempty(InteractiveUtils.incomplete_definitions(M))
+    # Method whose argument type is not yet defined: should be deferred,
+    # not raise. Go through `softscope` first to exercise the same
+    # wrapping the REPL backend applies to user input.
+    REPL.toplevel_eval_with_hooks(M, REPL.softscope(:(f_incomp(x::__NotYet_REPL__) = x));
+                                  defer_target = :(f_incomp(x::__NotYet_REPL__) = x))
+    defs = InteractiveUtils.incomplete_definitions(M)
+    @test length(defs) == 1
+    @test defs[1].waiting_for === :__NotYet_REPL__
+    # Defining the missing binding through the same REPL path drains the
+    # pending definition.
+    REPL.toplevel_eval_with_hooks(M, REPL.softscope(:(struct __NotYet_REPL__; end));
+                                  defer_target = :(struct __NotYet_REPL__; end))
+    @test isempty(InteractiveUtils.incomplete_definitions(M))
+    @test isa(Core.eval(M, :(f_incomp(__NotYet_REPL__()))), M.__NotYet_REPL__)
+    # An unrelated UndefVarError (non-definitional form) still surfaces.
+    @test_throws UndefVarError REPL.toplevel_eval_with_hooks(M, REPL.softscope(:(__NotYet_REPL2__));
+                                                             defer_target = :(__NotYet_REPL2__))
+    # Simulate a Revise-style transform that wraps the user form in an outer
+    # block (and then softscope wraps that block again): the pre-transform
+    # `defer_target` should still let the deferral mechanism recognise the
+    # definitional form.
+    orig = :(g_incomp(x::__NotYet_REPL3__) = x)
+    revise_wrapped = Expr(:block, :(nothing), orig)
+    REPL.toplevel_eval_with_hooks(M, REPL.softscope(revise_wrapped);
+                                  defer_target = orig)
+    defs3 = InteractiveUtils.incomplete_definitions(M)
+    @test any(d -> d.waiting_for === :__NotYet_REPL3__, defs3)
+    # The parser wraps REPL input in `Expr(:toplevel, LineNumberNode, expr)`.
+    # `eval_user_input` threads that pre-transform AST through as
+    # `defer_target`, so the deferral logic must peel the `:toplevel`
+    # wrapper around a single definitional form.
+    M4 = Module()
+    Core.eval(M4, :(using Base))
+    parsed = Expr(:toplevel, LineNumberNode(1, :REPL),
+                  :(h_incomp(x::__NotYet_REPL4__) = x))
+    REPL.toplevel_eval_with_hooks(M4, REPL.softscope(parsed.args[2]);
+                                  defer_target = parsed)
+    @test any(d -> d.waiting_for === :__NotYet_REPL4__,
+              InteractiveUtils.incomplete_definitions(M4))
 end
 
 # Mimic of JSON.jl's structure

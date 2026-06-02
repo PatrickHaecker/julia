@@ -1106,3 +1106,23 @@ const _interactiveutils_some_var_ = 0
     @test length(subtypes(M_sub, M_sub.MyAbstractParent)) == 1
     @test isempty(subtypes(M_sub, M_sub.MyAbstractParent; world=world_no_subtype))
 end
+
+@testset "incomplete_definitions" begin
+    M = Module()
+    @test isempty(InteractiveUtils.incomplete_definitions(M))
+    Core.eval(M, :(struct __IDefA; x::__Missing_A__; end))
+    Core.eval(M, :(struct __IDefB; y::__Missing_B__; end))
+    Core.eval(M, :(f_idef(::__Missing_C__) = nothing))
+    defs = InteractiveUtils.incomplete_definitions(M)
+    @test length(defs) == 3
+    @test all(d -> d.file isa Symbol && d.line isa Int, defs)
+    by_waiting = Dict(d.waiting_for => d for d in defs)
+    @test by_waiting[:__Missing_A__].name === :__IDefA
+    @test by_waiting[:__Missing_B__].name === :__IDefB
+    @test by_waiting[:__Missing_C__].name === nothing
+    # Defining one of the missing names drains the corresponding deferral.
+    Core.eval(M, :(__Missing_A__ = Int))
+    defs2 = InteractiveUtils.incomplete_definitions(M)
+    @test length(defs2) == 2
+    @test !(:__Missing_A__ in (d.waiting_for for d in defs2))
+end
