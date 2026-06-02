@@ -445,6 +445,63 @@ There are three important standard modules:
     using Test
     ```
 
+## [Forward references in top-level definitions](@id forward-references)
+
+!!! compat "Julia 1.14"
+    Automatic deferral of top-level definitions that reference not-yet-defined bindings
+    requires Julia 1.14 or later.
+
+Inside a module, top-level definitions may refer to bindings that have not yet been
+defined further down the same module. When evaluation of a definition would otherwise
+raise an `UndefVarError` for a name local to the current module, the definition is
+either *admitted in a dormant state* or *deferred* and retried automatically once the
+missing name is introduced. This applies to `struct`, `abstract type`, `primitive type`,
+`function` / short-form method, `macro`, and `const` type-alias definitions.
+
+```julia
+module M
+    # `Node` references `Tree`, which is defined further down.
+    struct Node
+        value::Int
+        tree::Tree
+    end
+
+    struct Tree
+        root::Node
+    end
+end
+```
+
+For method definitions, the missing name is replaced in the signature by a synthesised
+placeholder type, the method is added to the table immediately, and it is patched to the
+real signature once the name binds. Such a method is visible to [`methods`](@ref) but
+will not match any concrete dispatch until it is patched. Calling it before the patch
+raises a regular [`MethodError`](@ref).
+
+```julia
+module M
+    f(x::A) = x   # admitted dormant; visible via methods(f)
+    abstract type A end
+    # after evaluating the `A` definition, f's signature is patched in place
+end
+```
+
+For other definitional forms (`struct` field types, `abstract`/`primitive` supertypes,
+`const B = T{...}` type aliases, `macro` argument annotations), evaluation is deferred:
+the form is re-evaluated automatically when the missing binding becomes defined.
+
+Only *definitional* forms participate. A reference to an undefined name in *executable*
+position — such as inside a function body, in `const x = some_call()`, or in `Core.eval`
+of arbitrary code — surfaces eagerly as an `UndefVarError`, since such a reference is
+typically a programming error rather than a forward reference.
+
+At the end of module evaluation, any name that was forward-referenced but never bound is
+reported through an `IncompleteTypeError` that lists each unresolved name, the source
+location of its first reference, and how many dependents are still waiting on it.
+
+At the REPL (in `Main`), the close hook does not run, so unresolved forward references
+linger silently until you bind the missing name.
+
 ## Submodules and relative paths
 
 Modules can contain *submodules*, nesting the same syntax `module ... end`. They can be used to introduce separate namespaces, which can be helpful for organizing complex codebases. Note that each `module` introduces its own [scope](@ref scope-of-variables), so submodules do not automatically “inherit” names from their parent.

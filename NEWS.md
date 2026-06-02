@@ -16,8 +16,16 @@ New language features
     participate in the default break scope: a plain `break` or `break _` exits the innermost breakable scope,
     whether it is a loop or an `@label` block. The `continue` statement also supports labels with
     `continue name` to continue a labeled loop ([#60481]).
-  - `typegroup` blocks allow defining mutually recursive struct types that reference each other in their
-    field types. All types in the group are resolved atomically at the end of the block ([#60569]).
+  - Top-level definitions can now forward-reference bindings defined later in the
+    same module. This applies to `struct`, `abstract type`, `primitive type`,
+    `function`/short-form method, `macro`, and `const` type-alias definitions.
+    When such a definition references a binding that has not yet been defined,
+    it is admitted in a dormant state (methods become visible via `methods(f)`
+    but do not dispatch) or deferred and retried automatically once the missing
+    binding is introduced. At the end of module evaluation, any name that never
+    bound is reported via `IncompleteTypeError` listing every unresolved
+    reference. This enables defining mutually recursive struct types and methods
+    in any order within a module without requiring any special syntax.
 
 Language changes
 ----------------
