@@ -270,13 +270,14 @@ end
 intersect(world::WorldWithRange, valid_worlds::WorldRange) =
     WorldWithRange(world.this, intersect(world.valid_worlds, valid_worlds))
 
-# `InferenceState` and `IRInterpretationState` are defined together in a `typegroup`
-# block so each can reference the other in its `callstack` field type. They are not
-# meant to be subtyped from outside, so rather than introducing an abstract supertype
-# the shared `AbsIntState{I}` is a `Union` type alias (defined further below).
-typegroup
+# `InferenceState` and `IRInterpretationState` each reference the other in their
+# `callstack` field type. They share an abstract supertype `AbsIntState{I}` (declared
+# here, with operations defined further below) so the field can be typed without
+# forward-referencing either concrete struct. The supertype is `Compiler`-internal:
+# extending it from outside the module is not supported.
+abstract type AbsIntState{I<:AbstractInterpreter} end
 
-mutable struct InferenceState{I<:AbstractInterpreter}
+mutable struct InferenceState{I<:AbstractInterpreter} <: AbsIntState{I}
     #= information about this method instance =#
     linfo::MethodInstance
     valid_worlds::WorldRange
@@ -322,7 +323,7 @@ mutable struct InferenceState{I<:AbstractInterpreter}
     cycle_backedges::Vector{Tuple{InferenceState{I}, Int}} # call-graph backedges connecting from callee to caller
 
     # IPO tracking of in-process work, shared with all frames given AbstractInterpreter
-    callstack::Vector{Union{InferenceState{I},IRInterpretationState{I}}}
+    callstack::Vector{AbsIntState{I}}
     parentid::Int # index into callstack of the parent frame that originally added this frame (call cycle_parent to extract the current parent of the SCC)
     frameid::Int # index into callstack at which this object is found (or zero, if this is not a cached frame and has no parent)
     cycleid::Int # index into the callstack of the topmost frame in the cycle (all frames in the same cycle share the same cycleid)
@@ -403,7 +404,7 @@ mutable struct InferenceState{I<:AbstractInterpreter}
         pclimitations = IdSet{InferenceState}()
         limitations = IdSet{InferenceState}()
         cycle_backedges = Tuple{InferenceState{I},Int}[]
-        callstack = Union{InferenceState{I},IRInterpretationState{I}}[]
+        callstack = AbsIntState{I}[]
         tasks = WorkThunk[]
 
         valid_worlds = WorldRange(1, get_world_counter())
@@ -453,7 +454,7 @@ mutable struct InferenceState{I<:AbstractInterpreter}
 end
 
 # TODO add `result::InferenceResult` and put the irinterp result into the inference cache?
-mutable struct IRInterpretationState{I<:AbstractInterpreter}
+mutable struct IRInterpretationState{I<:AbstractInterpreter} <: AbsIntState{I}
     const spec_info::SpecInfo
     const ir::IRCode
     const mi::MethodInstance
@@ -468,7 +469,7 @@ mutable struct IRInterpretationState{I<:AbstractInterpreter}
     const lazyreachability::LazyCFGReachability
     const tasks::Vector{WorkThunk}
     const edges::Vector{Any}
-    callstack::Vector{Union{InferenceState{I},IRInterpretationState{I}}}
+    callstack::Vector{AbsIntState{I}}
     frameid::Int
     parentid::Int
     interp::AbstractInterpreter # see comment on `InferenceState.interp`
@@ -499,14 +500,12 @@ mutable struct IRInterpretationState{I<:AbstractInterpreter}
         end
         tasks = WorkThunk[]
         edges = Any[]
-        callstack = Union{InferenceState{I},IRInterpretationState{I}}[]
+        callstack = AbsIntState{I}[]
         return new{I}(spec_info, ir, mi, valid_worlds,
                 curridx, 0.0, 0, argtypes_refined, ir.sptypes, tpdum,
                 ssa_refined, lazyreachability, tasks, edges, callstack, 0, 0, interp)
     end
 end
-
-end # typegroup
 
 gethandler(frame::InferenceState, pc::Int=frame.currpc) = gethandler(frame.handler_info, pc)
 gethandler(::Nothing, ::Int) = nothing
@@ -946,7 +945,6 @@ end
 
 # IRInterpretationState
 # =====================
-# (the struct itself is defined in the `typegroup` block alongside `InferenceState`)
 
 IRInterpretationState(interp::I, spec_info::SpecInfo, ir::IRCode,
                       mi::MethodInstance, argtypes::Vector{Any},
@@ -972,8 +970,7 @@ end
 
 # AbsIntState
 # ===========
-
-const AbsIntState{I<:AbstractInterpreter} = Union{InferenceState{I}, IRInterpretationState{I}}
+# (the abstract supertype itself is declared above, alongside `InferenceState`)
 
 function print_callstack(frame::AbsIntState)
     print("=================== Callstack: ==================\n")
