@@ -169,70 +169,130 @@ X{S, T=w}
 # Simple abstract type definition
 abstract type A end
 #---------------------
-1   (call core.svec)
-2   (call core._abstracttype TestMod :A %₁)
-3   (= slot₁/A %₂)
-4   (call core._setsuper! %₂ core.Any)
-5   (call core._typebody! false slot₁/A)
-6   (call core.declare_global TestMod :A false)
-7   latestworld
+1   (call core.declare_global TestMod :A false)
+2   latestworld
+3   (call core.svec)
+4   (call core._abstracttype TestMod :A %₃)
+5   (= slot₁/A %₄)
+6   (enter label₂₆)
+7   (call core._setsuper! %₄ core.Any)
 8   (call core.isdefinedglobal TestMod :A false)
-9   (gotoifnot %₈ label₁₄)
+9   (gotoifnot %₈ label₁₃)
 10  TestMod.A
-11  (call core._equiv_typedef %₁₀ %₂)
-12  (gotoifnot %₁₁ label₁₄)
-13  (goto label₁₆)
-14  (call core.declare_const TestMod :A %₂)
-15  latestworld
-16  (return core.nothing)
+11  (= slot₂/if_val (call core._equiv_typedef %₁₀ %₄))
+12  (goto label₁₄)
+13  (= slot₂/if_val false)
+14  slot₂/if_val
+15  (gotoifnot %₁₄ label₁₉)
+16  TestMod.A
+17  (= slot₃/if_val %₁₆)
+18  (goto label₂₀)
+19  (= slot₃/if_val false)
+20  slot₃/if_val
+21  (call core._typebody! %₂₀ %₄)
+22  (call core.declare_const TestMod :A %₂₁)
+23  latestworld
+24  (leave %₆)
+25  (goto label₃₆)
+26  (call JuliaLowering.current_exception)
+27  (call top.incomplete_can_defer %₂₆ TestMod)
+28  (gotoifnot %₂₇ label₃₄)
+29  (call core.isdefinedglobal TestMod :A false)
+30  (gotoifnot %₂₉ label₃₂)
+31  (goto label₃₄)
+32  (call core.declare_const TestMod :A %₄)
+33  latestworld
+34  (call top.rethrow)
+35  (pop_exception %₆)
+36  (return core.nothing)
 
 ########################################
 # Abstract type definition with supertype
 abstract type A <: B end
 #---------------------
-1   (call core.svec)
-2   (call core._abstracttype TestMod :A %₁)
-3   (= slot₁/A %₂)
-4   TestMod.B
-5   (call core._setsuper! %₂ %₄)
-6   (call core._typebody! false slot₁/A)
-7   (call core.declare_global TestMod :A false)
-8   latestworld
+1   (call core.declare_global TestMod :A false)
+2   latestworld
+3   (call core.svec)
+4   (call core._abstracttype TestMod :A %₃)
+5   (= slot₁/A %₄)
+6   (enter label₂₇)
+7   TestMod.B
+8   (call core._setsuper! %₄ %₇)
 9   (call core.isdefinedglobal TestMod :A false)
-10  (gotoifnot %₉ label₁₅)
+10  (gotoifnot %₉ label₁₄)
 11  TestMod.A
-12  (call core._equiv_typedef %₁₁ %₂)
-13  (gotoifnot %₁₂ label₁₅)
-14  (goto label₁₇)
-15  (call core.declare_const TestMod :A %₂)
-16  latestworld
-17  (return core.nothing)
+12  (= slot₂/if_val (call core._equiv_typedef %₁₁ %₄))
+13  (goto label₁₅)
+14  (= slot₂/if_val false)
+15  slot₂/if_val
+16  (gotoifnot %₁₅ label₂₀)
+17  TestMod.A
+18  (= slot₃/if_val %₁₇)
+19  (goto label₂₁)
+20  (= slot₃/if_val false)
+21  slot₃/if_val
+22  (call core._typebody! %₂₁ %₄)
+23  (call core.declare_const TestMod :A %₂₂)
+24  latestworld
+25  (leave %₆)
+26  (goto label₃₇)
+27  (call JuliaLowering.current_exception)
+28  (call top.incomplete_can_defer %₂₇ TestMod)
+29  (gotoifnot %₂₈ label₃₅)
+30  (call core.isdefinedglobal TestMod :A false)
+31  (gotoifnot %₃₀ label₃₃)
+32  (goto label₃₅)
+33  (call core.declare_const TestMod :A %₄)
+34  latestworld
+35  (call top.rethrow)
+36  (pop_exception %₆)
+37  (return core.nothing)
 
 ########################################
 # Abstract type definition with multiple typevars
 abstract type A{X, Y <: X} end
 #---------------------
-1   (= slot₂/X (call core.TypeVar :X))
-2   slot₂/X
-3   (= slot₃/Y (call core.TypeVar :Y %₂))
+1   (call core.declare_global TestMod :A false)
+2   latestworld
+3   (= slot₂/X (call core.TypeVar :X))
 4   slot₂/X
-5   slot₃/Y
-6   (call core.svec %₄ %₅)
-7   (call core._abstracttype TestMod :A %₆)
-8   (= slot₁/A %₇)
-9   (call core._setsuper! %₇ core.Any)
-10  (call core._typebody! false slot₁/A)
-11  (call core.declare_global TestMod :A false)
-12  latestworld
+5   (= slot₃/Y (call core.TypeVar :Y %₄))
+6   slot₂/X
+7   slot₃/Y
+8   (call core.svec %₆ %₇)
+9   (call core._abstracttype TestMod :A %₈)
+10  (= slot₁/A %₉)
+11  (enter label₃₁)
+12  (call core._setsuper! %₉ core.Any)
 13  (call core.isdefinedglobal TestMod :A false)
-14  (gotoifnot %₁₃ label₁₉)
+14  (gotoifnot %₁₃ label₁₈)
 15  TestMod.A
-16  (call core._equiv_typedef %₁₅ %₇)
-17  (gotoifnot %₁₆ label₁₉)
-18  (goto label₂₁)
-19  (call core.declare_const TestMod :A %₇)
-20  latestworld
-21  (return core.nothing)
+16  (= slot₄/if_val (call core._equiv_typedef %₁₅ %₉))
+17  (goto label₁₉)
+18  (= slot₄/if_val false)
+19  slot₄/if_val
+20  (gotoifnot %₁₉ label₂₄)
+21  TestMod.A
+22  (= slot₅/if_val %₂₁)
+23  (goto label₂₅)
+24  (= slot₅/if_val false)
+25  slot₅/if_val
+26  (call core._typebody! %₂₅ %₉)
+27  (call core.declare_const TestMod :A %₂₆)
+28  latestworld
+29  (leave %₁₁)
+30  (goto label₄₁)
+31  (call JuliaLowering.current_exception)
+32  (call top.incomplete_can_defer %₃₁ TestMod)
+33  (gotoifnot %₃₂ label₃₉)
+34  (call core.isdefinedglobal TestMod :A false)
+35  (gotoifnot %₃₄ label₃₇)
+36  (goto label₃₉)
+37  (call core.declare_const TestMod :A %₉)
+38  latestworld
+39  (call top.rethrow)
+40  (pop_exception %₁₁)
+41  (return core.nothing)
 
 ########################################
 # Error: Abstract type definition with bad signature
@@ -274,71 +334,131 @@ end
 # Simple primitive type definition
 primitive type P 8 end
 #---------------------
-1   (call core.svec)
-2   (call core._primitivetype TestMod :P %₁ 8)
-3   (= slot₁/P %₂)
-4   (call core._setsuper! %₂ core.Any)
-5   (call core._typebody! false slot₁/P)
-6   (call core.declare_global TestMod :P false)
-7   latestworld
+1   (call core.declare_global TestMod :P false)
+2   latestworld
+3   (call core.svec)
+4   (call core._primitivetype TestMod :P %₃ 8)
+5   (= slot₁/P %₄)
+6   (enter label₂₆)
+7   (call core._setsuper! %₄ core.Any)
 8   (call core.isdefinedglobal TestMod :P false)
-9   (gotoifnot %₈ label₁₄)
+9   (gotoifnot %₈ label₁₃)
 10  TestMod.P
-11  (call core._equiv_typedef %₁₀ %₂)
-12  (gotoifnot %₁₁ label₁₄)
-13  (goto label₁₆)
-14  (call core.declare_const TestMod :P %₂)
-15  latestworld
-16  (return core.nothing)
+11  (= slot₂/if_val (call core._equiv_typedef %₁₀ %₄))
+12  (goto label₁₄)
+13  (= slot₂/if_val false)
+14  slot₂/if_val
+15  (gotoifnot %₁₄ label₁₉)
+16  TestMod.P
+17  (= slot₃/if_val %₁₆)
+18  (goto label₂₀)
+19  (= slot₃/if_val false)
+20  slot₃/if_val
+21  (call core._typebody! %₂₀ %₄)
+22  (call core.declare_const TestMod :P %₂₁)
+23  latestworld
+24  (leave %₆)
+25  (goto label₃₆)
+26  (call JuliaLowering.current_exception)
+27  (call top.incomplete_can_defer %₂₆ TestMod)
+28  (gotoifnot %₂₇ label₃₄)
+29  (call core.isdefinedglobal TestMod :P false)
+30  (gotoifnot %₂₉ label₃₂)
+31  (goto label₃₄)
+32  (call core.declare_const TestMod :P %₄)
+33  latestworld
+34  (call top.rethrow)
+35  (pop_exception %₆)
+36  (return core.nothing)
 
 ########################################
 # Complex primitive type definition
 primitive type P{X,Y} <: Z 32 end
 #---------------------
-1   (= slot₂/X (call core.TypeVar :X))
-2   (= slot₃/Y (call core.TypeVar :Y))
-3   slot₂/X
-4   slot₃/Y
-5   (call core.svec %₃ %₄)
-6   (call core._primitivetype TestMod :P %₅ 32)
-7   (= slot₁/P %₆)
-8   TestMod.Z
-9   (call core._setsuper! %₆ %₈)
-10  (call core._typebody! false slot₁/P)
-11  (call core.declare_global TestMod :P false)
-12  latestworld
+1   (call core.declare_global TestMod :P false)
+2   latestworld
+3   (= slot₂/X (call core.TypeVar :X))
+4   (= slot₃/Y (call core.TypeVar :Y))
+5   slot₂/X
+6   slot₃/Y
+7   (call core.svec %₅ %₆)
+8   (call core._primitivetype TestMod :P %₇ 32)
+9   (= slot₁/P %₈)
+10  (enter label₃₁)
+11  TestMod.Z
+12  (call core._setsuper! %₈ %₁₁)
 13  (call core.isdefinedglobal TestMod :P false)
-14  (gotoifnot %₁₃ label₁₉)
+14  (gotoifnot %₁₃ label₁₈)
 15  TestMod.P
-16  (call core._equiv_typedef %₁₅ %₆)
-17  (gotoifnot %₁₆ label₁₉)
-18  (goto label₂₁)
-19  (call core.declare_const TestMod :P %₆)
-20  latestworld
-21  (return core.nothing)
+16  (= slot₄/if_val (call core._equiv_typedef %₁₅ %₈))
+17  (goto label₁₉)
+18  (= slot₄/if_val false)
+19  slot₄/if_val
+20  (gotoifnot %₁₉ label₂₄)
+21  TestMod.P
+22  (= slot₅/if_val %₂₁)
+23  (goto label₂₅)
+24  (= slot₅/if_val false)
+25  slot₅/if_val
+26  (call core._typebody! %₂₅ %₈)
+27  (call core.declare_const TestMod :P %₂₆)
+28  latestworld
+29  (leave %₁₀)
+30  (goto label₄₁)
+31  (call JuliaLowering.current_exception)
+32  (call top.incomplete_can_defer %₃₁ TestMod)
+33  (gotoifnot %₃₂ label₃₉)
+34  (call core.isdefinedglobal TestMod :P false)
+35  (gotoifnot %₃₄ label₃₇)
+36  (goto label₃₉)
+37  (call core.declare_const TestMod :P %₈)
+38  latestworld
+39  (call top.rethrow)
+40  (pop_exception %₁₀)
+41  (return core.nothing)
 
 ########################################
 # Primitive type definition with computed size (should this be allowed??)
 primitive type P P_nbits() end
 #---------------------
-1   (call core.svec)
-2   TestMod.P_nbits
-3   (call %₂)
-4   (call core._primitivetype TestMod :P %₁ %₃)
-5   (= slot₁/P %₄)
-6   (call core._setsuper! %₄ core.Any)
-7   (call core._typebody! false slot₁/P)
-8   (call core.declare_global TestMod :P false)
-9   latestworld
+1   (call core.declare_global TestMod :P false)
+2   latestworld
+3   (call core.svec)
+4   TestMod.P_nbits
+5   (call %₄)
+6   (call core._primitivetype TestMod :P %₃ %₅)
+7   (= slot₁/P %₆)
+8   (enter label₂₈)
+9   (call core._setsuper! %₆ core.Any)
 10  (call core.isdefinedglobal TestMod :P false)
-11  (gotoifnot %₁₀ label₁₆)
+11  (gotoifnot %₁₀ label₁₅)
 12  TestMod.P
-13  (call core._equiv_typedef %₁₂ %₄)
-14  (gotoifnot %₁₃ label₁₆)
-15  (goto label₁₈)
-16  (call core.declare_const TestMod :P %₄)
-17  latestworld
-18  (return core.nothing)
+13  (= slot₂/if_val (call core._equiv_typedef %₁₂ %₆))
+14  (goto label₁₆)
+15  (= slot₂/if_val false)
+16  slot₂/if_val
+17  (gotoifnot %₁₆ label₂₁)
+18  TestMod.P
+19  (= slot₃/if_val %₁₈)
+20  (goto label₂₂)
+21  (= slot₃/if_val false)
+22  slot₃/if_val
+23  (call core._typebody! %₂₂ %₆)
+24  (call core.declare_const TestMod :P %₂₃)
+25  latestworld
+26  (leave %₈)
+27  (goto label₃₈)
+28  (call JuliaLowering.current_exception)
+29  (call top.incomplete_can_defer %₂₈ TestMod)
+30  (gotoifnot %₂₉ label₃₆)
+31  (call core.isdefinedglobal TestMod :P false)
+32  (gotoifnot %₃₁ label₃₄)
+33  (goto label₃₆)
+34  (call core.declare_const TestMod :P %₆)
+35  latestworld
+36  (call top.rethrow)
+37  (pop_exception %₈)
+38  (return core.nothing)
 
 ########################################
 # Empty struct
@@ -1249,122 +1369,6 @@ end
     15  (return %₁₄)
 42  latestworld
 43  (return core.nothing)
-
-########################################
-# Basic typegroup
-typegroup
-    struct A
-        b::B
-    end
-    struct B
-        a::A
-    end
-end
-#---------------------
-1   (call core.declare_global TestMod :A false)
-2   latestworld
-3   (call core.declare_global TestMod :B false)
-4   latestworld
-5   (= slot₂/A (call core.TypeVar :A))
-6   (= slot₃/B (call core.TypeVar :B))
-7   (call core.svec)
-8   (call core.svec :b)
-9   (call core.svec)
-10  slot₃/B
-11  (call core.svec %₁₀)
-12  (call core.svec %₇ %₈ %₉ false 1 core.Any %₁₁)
-13  (call core.svec)
-14  (call core.svec :a)
-15  (call core.svec)
-16  slot₂/A
-17  (call core.svec %₁₆)
-18  (call core.svec %₁₃ %₁₄ %₁₅ false 1 core.Any %₁₇)
-19  slot₂/A
-20  slot₃/B
-21  (call core.svec %₁₉ %₂₀)
-22  (call core.svec %₁₂ %₁₈)
-23  (call core.resolve_typegroup TestMod %₂₁ %₂₂)
-24  (call top.indexed_iterate %₂₃ 1)
-25  (= slot₂/A (call core.getfield %₂₄ 1))
-26  (= slot₁/iterstate (call core.getfield %₂₄ 2))
-27  slot₁/iterstate
-28  (call top.indexed_iterate %₂₃ 2 %₂₇)
-29  (= slot₃/B (call core.getfield %₂₈ 1))
-30  slot₂/A
-31  (call core.declare_const TestMod :A %₃₀)
-32  latestworld
-33  slot₃/B
-34  (call core.declare_const TestMod :B %₃₃)
-35  latestworld
-36  TestMod.A
-37  SourceLocation::2:5
-38  (call top._defaultctors %₃₆ %₃₇)
-39  TestMod.B
-40  SourceLocation::5:5
-41  (call top._defaultctors %₃₉ %₄₀)
-42  latestworld
-43  (return core.nothing)
-
-########################################
-# Typegroup with supertype and apply_type_or_typeapp replacement
-typegroup
-    struct A <: AbstractVector{B}
-        b::Union{Nothing, B}
-    end
-    struct B
-        a::A
-    end
-end
-#---------------------
-1   (call core.declare_global TestMod :A false)
-2   latestworld
-3   (call core.declare_global TestMod :B false)
-4   latestworld
-5   (= slot₂/A (call core.TypeVar :A))
-6   (= slot₃/B (call core.TypeVar :B))
-7   (call core.svec)
-8   (call core.svec :b)
-9   (call core.svec)
-10  TestMod.AbstractVector
-11  slot₃/B
-12  (call core.apply_type_or_typeapp %₁₀ %₁₁)
-13  TestMod.Union
-14  TestMod.Nothing
-15  slot₃/B
-16  (call core.apply_type_or_typeapp %₁₃ %₁₄ %₁₅)
-17  (call core.svec %₁₆)
-18  (call core.svec %₇ %₈ %₉ false 1 %₁₂ %₁₇)
-19  (call core.svec)
-20  (call core.svec :a)
-21  (call core.svec)
-22  slot₂/A
-23  (call core.svec %₂₂)
-24  (call core.svec %₁₉ %₂₀ %₂₁ false 1 core.Any %₂₃)
-25  slot₂/A
-26  slot₃/B
-27  (call core.svec %₂₅ %₂₆)
-28  (call core.svec %₁₈ %₂₄)
-29  (call core.resolve_typegroup TestMod %₂₇ %₂₈)
-30  (call top.indexed_iterate %₂₉ 1)
-31  (= slot₂/A (call core.getfield %₃₀ 1))
-32  (= slot₁/iterstate (call core.getfield %₃₀ 2))
-33  slot₁/iterstate
-34  (call top.indexed_iterate %₂₉ 2 %₃₃)
-35  (= slot₃/B (call core.getfield %₃₄ 1))
-36  slot₂/A
-37  (call core.declare_const TestMod :A %₃₆)
-38  latestworld
-39  slot₃/B
-40  (call core.declare_const TestMod :B %₃₉)
-41  latestworld
-42  TestMod.A
-43  SourceLocation::2:5
-44  (call top._defaultctors %₄₂ %₄₃)
-45  TestMod.B
-46  SourceLocation::5:5
-47  (call top._defaultctors %₄₅ %₄₆)
-48  latestworld
-49  (return core.nothing)
 
 ########################################
 # Error: Duplicate field name in struct
