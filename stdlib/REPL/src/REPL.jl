@@ -344,7 +344,12 @@ function toplevel_eval_with_hooks(mod::Module, @nospecialize(ast), toplevel_file
     end
     local value=nothing
     for i = 1:length(ast.args)
-        value = toplevel_eval_with_hooks(mod, ast.args[i], toplevel_file, toplevel_line)
+        # `defer_target` keeps pointing at the pre-transform expression, so a
+        # definitional form buried under wrappers an ast transform introduced
+        # (a `try`/`finally` from `Infiltrator`, a nested `:toplevel` from
+        # `Revise`) is still recognized as deferrable.
+        value = toplevel_eval_with_hooks(
+            mod, ast.args[i], toplevel_file, toplevel_line; defer_target)
     end
     return value
 end

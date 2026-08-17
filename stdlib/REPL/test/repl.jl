@@ -1348,6 +1348,22 @@ end
                                   defer_target = parsed)
     @test any(d -> d.waiting_for === :__NotYet_REPL4__,
               InteractiveUtils.incomplete_definitions(M4))
+    # A transform chain (`Revise` + `Infiltrator`) can hand the backend an
+    # outer `Expr(:toplevel, …)` whose statement is the user form buried in a
+    # `try`/`finally`. `defer_target` must reach the per-statement eval, since
+    # the wrappers themselves are not definitional forms.
+    M5 = Module()
+    Core.eval(M5, :(using Base))
+    orig5 = :(i_incomp(x::__NotYet_REPL5__) = x)
+    wrapped5 = Expr(:toplevel, :(nothing),
+                    :(try
+                          $(REPL.softscope(orig5))
+                      finally
+                          nothing
+                      end))
+    REPL.toplevel_eval_with_hooks(M5, wrapped5; defer_target = orig5)
+    @test any(d -> d.waiting_for === :__NotYet_REPL5__,
+              InteractiveUtils.incomplete_definitions(M5))
 end
 
 # Mimic of JSON.jl's structure
