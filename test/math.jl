@@ -1228,6 +1228,16 @@ end
     end
 end
 
+@testset "tiny arguments of the inverse trigonometric functions, $T" for T in (Float32, Float64)
+    # asin and acos carry no fast path for tiny |x|, so the general expressions
+    # have to reach the limit on their own
+    for x in (T(2)^-60, floatmin(T), nextfloat(zero(T)))
+        @test asin(x) === x context = x
+        @test asin(-x) === -x context = x
+        @test acos(x) === T(pi)/2 context = x
+    end
+end
+
 @testset "acos #23283" begin
     for T in (Float32, Float64)
         @test acos(zero(T)) === T(pi)/2

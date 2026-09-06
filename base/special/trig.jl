@@ -423,10 +423,7 @@ function asin(x::T) where T<:Union{Float32, Float64}
         end
         asin_domain_error(x)
     elseif absx < T(1.0)/2
-        # if |x| sufficiently small, |x| is a good approximation
-        if absx < ASIN_X_MIN_THRESHOLD(T)
-            return x
-        end
+        # arc_tRt(0) is 0, so tiny |x| returns x unchanged
         return muladd(x, arc_tRt(x*x), x)
     end
     # else 1/2 <= |x| < 1
@@ -639,8 +636,6 @@ function atan(y::T, x::T) where T<:Union{Float32, Float64}
     end
 end
 # acos methods
-ACOS_X_MIN_THRESHOLD(::Type{Float32}) = 2.0f0^-26
-ACOS_X_MIN_THRESHOLD(::Type{Float64}) = 2.0^-57
 PIO2_HI(::Type{Float32}) = 1.5707962513f+00
 PIO2_LO(::Type{Float32}) = 7.5497894159f-08
 PIO2_HI(::Type{Float64}) = 1.57079632679489655800e+00
@@ -679,9 +674,7 @@ function acos(x::T) where T <: Union{Float32, Float64}
         # acos(x) is not defined for |x| > 1
         acos_domain_error(x) # see 5) above
     elseif absx < T(1.0)/2 # see 1) above
-        # if |x| sufficiently small, acos(x) ≈ pi/2
-        absx < ACOS_X_MIN_THRESHOLD(T) && return T(pi)/2
-        # if |x| < 0.5 we have acos(x) = pi/2 - (x + x*x^2*R(x^2))
+        # tiny |x| collapses this to pi/2
         return PIO2_HI(T) - (x - (PIO2_LO(T) - x*arc_tRt(x*x)))
     end
     z = (T(1.0) - absx)*T(0.5)
