@@ -479,6 +479,11 @@ atan_q(w::Float32) = w*@horner(w, -1.9999158382f-01, -1.0648017377f-01)
     atan_p(x², x⁴), atan_q(x⁴)
 end
 
+# Callers below build `i` as a sum of three Bools plus one, so it is always in `1:4`.
+# LLVM drops the bounds check either way, so the assertion only serves to keep the
+# callers `nothrow`.
+@assume_effects :nothrow @inline atan_select(t::NTuple{4}, i::Int) = t[i]
+
 function atan(x::T) where T<:Union{Float32, Float64}
     # Method
     #   1. Reduce x to positive by atan(x) = -atan(-x).
@@ -505,33 +510,21 @@ function atan(x::T) where T<:Union{Float32, Float64}
             return x
         end
         p, q = atan_pq(x)
-        return x - x*(p + q)
+        return muladd(-x, p + q, x)
     end
     xsign = sign(x)
-    if absx < T(19/16) # 7/16 <= |x| < 19/16
-        if absx < T(11/16) # 7/16 <= |x| <11/16
-            hi = ATAN_1_O_2_HI(T)
-            lo = ATAN_1_O_2_LO(T)
-            x = (T(2.0)*absx - T(1.0))/(T(2.0) + absx)
-        else # 11/16 <= |x| < 19/16
-            hi = ATAN_2_O_2_HI(T)
-            lo = ATAN_2_O_2_LO(T)
-            x  = (absx - T(1.0))/(absx + T(1.0))
-        end
-    else
-        if absx < T(39/16)  # 19/16 <= |x| < 39/16
-            hi = ATAN_3_O_2_HI(T)
-            lo = ATAN_3_O_2_LO(T)
-            x = (absx - T(1.5))/(T(1.0) + T(1.5)*absx)
-        else # 39/16 <= |x| < upper threshold (2.0^66 or 2.0f0^26)
-            hi = ATAN_INF_HI(T)
-            lo = ATAN_INF_LO(T)
-            x  = -T(1.0)/absx
-        end
-    end
+    # The four centers share xr = (a*|x| - b)/(a + b*|x|), with (a, b) = (0, 1)
+    # degenerating to -1/|x|. Every coefficient is exact, so this agrees with the
+    # nested form bit for bit, and the three comparisons need no branch between them.
+    i = (absx >= T(11/16)) + (absx >= T(19/16)) + (absx >= T(39/16)) + 1
+    a = atan_select((T(2.0), T(1.0), T(2.0), T(0.0)), i)
+    b = atan_select((T(1.0), T(1.0), T(3.0), T(1.0)), i)
+    hi = atan_select((ATAN_1_O_2_HI(T), ATAN_2_O_2_HI(T), ATAN_3_O_2_HI(T), ATAN_INF_HI(T)), i)
+    lo = atan_select((ATAN_1_O_2_LO(T), ATAN_2_O_2_LO(T), ATAN_3_O_2_LO(T), ATAN_INF_LO(T)), i)
+    x = muladd(a, absx, -b)/muladd(b, absx, a)
     # end of argument reduction
     p, q = atan_pq(x)
-    z = hi - ((x*(p + q) - lo) - x)
+    z = hi - (muladd(x, p + q, -lo) - x)
     copysign(z, xsign)
 end
 # atan2 methods
