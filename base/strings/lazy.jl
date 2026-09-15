@@ -33,13 +33,23 @@ times, though only exactly one result will be returned.
 !!! compat "Julia 1.9"
     `LazyString` is safe in the above sense in Julia 1.9 and later.
 """
-mutable struct LazyString <: AbstractString
-    const parts::Tuple
+mutable struct LazyString{T<:Tuple} <: AbstractString
+    const parts::T # parametric for type stability
     const compact::Bool # compact & limited output
-    # Created on first access
-    @atomic str::Union{String,Nothing}
-    global _LazyString(parts, str) = new(parts, false, str)
-    LazyString(args...; compact::Bool=false) = new(args, compact, nothing)
+    @atomic str::Union{String,Nothing} # created on first access
+
+    global function _LazyString(parts, str)
+        converted = convert(Tuple, parts)
+        return new{typeof(converted)}(converted, false, str)
+    end
+
+    # Lowering inserts a conversion branch that is unreachable because the field type
+    # is typeof(args), but inference does not prove this when argument types are unknown.
+    function LazyString(args...; compact::Bool=false)
+        @_effect_free_terminates_locally_meta
+        @_terminates_globally_noub_meta
+        return new{typeof(args)}(args, compact, nothing)
+    end
 end
 
 """
